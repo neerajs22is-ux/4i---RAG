@@ -1,0 +1,304 @@
+// ask — Phase 3C.1 grounded answer-generation baseline.
+//
+// Authenticated query → query-chunks evidence (reused, never duplicated) →
+// deterministic sufficiency gate → grounded generation (Bedrock Converse,
+// temp 0.0) → citation guard → groundedness tripwire → persisted
+// conversation. Refusals/clarifications never touch the LLM.
+//
+// Grounding contract: the model is not authoritative; retrieved evidence is.
+// No reviewer, no planner, no loops, no regeneration. Citation-guard failure
+// is a hard safe failure (502). Tripwire findings downgrade the label with
+// an explicit note (no silent rewrite, no second generation).
+// Caller-JWT data plane throughout (RLS applies); no service_role.
+// Logs metadata only. Never keys, content, vectors, or tokens.
+
+import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+} from "npm:@aws-sdk/client-bedrock-runtime@3.1131.0";
+// Edge transport: the SDK's default Node HTTP/2 handler is not implemented
+// in the Edge Runtime; the Smithy fetch handler (same AWS SDK family) is.
+import { FetchHttpHandler } from "npm:@smithy/fetch-http-handler@5.8.0";
+import {
+  buildEvidenceBlock,
+  checkGroundedness,
+  clarificationTrigger,
+  parseCitations,
+  promptModeFor,
+  REFUSAL_TEXT,
+  renderPrompt,
+  validateCitations,
+  verifyEvidence,
+  type EvidenceItem,
+} from "../_shared/grounding.ts";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_TOKENS = 1024;
+
+function stripThink(text: string): string {
+  return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+Deno.serve(async (req: Request): Promise<Response> => {
+  const t0 = performance.now();
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
+
+  const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+  if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  const db = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
+  });
+  const { data: udata, error: uerr } = await db.auth.getUser(jwt);
+  if (uerr || !udata?.user) return json(401, { ok: false, error: "invalid token" });
+  const caller = udata.user.id;
+
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return json(400, { ok: false, error: "invalid JSON" });
+  }
+  const tenantId = String(body.tenant_id ?? "");
+  const query = String(body.query ?? "").trim();
+  const conversationId = body.conversation_id != null ? String(body.conversation_id) : null;
+  if (!UUID_RE.test(tenantId)) return json(400, { ok: false, error: "invalid tenant_id" });
+  if (!query || query.length > 1000) return json(400, { ok: false, error: "invalid query" });
+  if (conversationId !== null && !UUID_RE.test(conversationId)) {
+    return json(400, { ok: false, error: "invalid conversation_id" });
+  }
+
+  const { data: mem } = await db.from("memberships")
+    .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
+  if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+
+  // Conversation: verify ownership or create. History count feeds the
+  // clarification gate (referent check); full transcripts are never sent
+  // to the model in this baseline.
+  let convId = conversationId;
+  let priorCount = 0;
+  if (convId) {
+    const { data: conv, error: convErr } = await db.from("conversations")
+      .select("id").eq("id", convId).eq("tenant_id", tenantId).single();
+    if (convErr || !conv) return json(404, { ok: false, error: "conversation not found" });
+    const { count } = await db.from("messages")
+      .select("id", { count: "exact", head: true }).eq("conversation_id", convId);
+    priorCount = count ?? 0;
+  } else {
+    const { data: created, error: createErr } = await db.from("conversations").insert({
+      tenant_id: tenantId,
+      user_id: caller,
+      title: query.slice(0, 80),
+    }).select("id").single();
+    if (createErr || !created) return json(500, { ok: false, error: "conversation create failed" });
+    convId = (created as { id: string }).id;
+  }
+  async function persistAssistant(
+    content: string,
+    label: string,
+    sources: unknown[],
+    modelIds: unknown,
+    timings: unknown,
+    grounded: boolean | null,
+  ): Promise<string | null> {
+    // Single multi-row insert: PostgREST requires uniform keys across rows
+    // (PGRST102 otherwise). User row carries neutral metadata columns.
+    const { error } = await db.from("messages").insert([
+      {
+        conversation_id: convId, tenant_id: tenantId, role: "user",
+        content: query, label: null, sources: [], model_ids: {}, timings: {},
+      },
+      {
+        conversation_id: convId, tenant_id: tenantId, role: "assistant",
+        content, label, sources, model_ids: modelIds, timings: { ...(timings as object), grounded },
+      },
+    ]);
+    if (error) {
+      console.log(JSON.stringify({ fn: "ask", caller, tenant_id: tenantId, path: "persist-failed", error: error.message.slice(0, 200) }));
+      return error.message.slice(0, 200);
+    }
+    return null;
+  }
+
+  // 1. Bounded deterministic clarification gate (no LLM, no loops).
+  const { count: docCount } = await db.from("documents")
+    .select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
+  const clar = clarificationTrigger(query, priorCount, docCount ?? 0);
+  if (clar.needed) {
+    const persistErr = await persistAssistant(clar.question, "clarification", [], { prompt: null }, { total_ms: Math.round(performance.now() - t0) }, null);
+    console.log(JSON.stringify({ fn: "ask", caller, tenant_id: tenantId, path: "clarification", reason: clar.reason }));
+    return json(200, {
+      ok: true, answer: clar.question, label: "clarification",
+      citations: [], evidence_count: 0, grounded: null, conversation_id: convId,
+      persisted: persistErr === null,
+      ...(persistErr ? { persistence_error: persistErr } : {}),
+    });
+  }
+
+  // 2. Retrieve evidence through the existing mechanism (reused, not copied).
+  const tR0 = performance.now();
+  let retrieved: EvidenceItem[];
+  let retrievalTokens = 0;
+  try {
+    const r = await fetch(`${supabaseUrl}/functions/v1/query-chunks`, {
+      method: "POST",
+      headers: { apikey: anonKey, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant_id: tenantId, query }),
+    });
+    if (!r.ok) {
+      const t = (await r.text()).slice(0, 200);
+      return json(502, { ok: false, error: `retrieval failed: ${t}` });
+    }
+    const rj = await r.json() as {
+      ok?: boolean; error?: string; evidence?: EvidenceItem[]; query_tokens?: number;
+    };
+    if (!rj.ok) return json(502, { ok: false, error: `retrieval failed: ${String(rj.error ?? "unknown").slice(0, 200)}` });
+    retrieved = rj.evidence ?? [];
+    retrievalTokens = rj.query_tokens ?? 0;
+  } catch (e) {
+    return json(502, { ok: false, error: `retrieval failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` });
+  }
+  const retrievalMs = Math.round(performance.now() - tR0);
+
+  // 3. Deterministic sufficiency gate (model-free).
+  const gate = verifyEvidence(query, retrieved);
+  const mode = promptModeFor(gate.verdict);
+  const sources = retrieved.map((e, i) => ({
+    n: i + 1, chunk_id: e.chunk_id, document_id: e.document_id,
+    file_name: e.file_name, page: e.page,
+    fused_rank: e.fused_rank, fused_score: e.fused_score,
+  }));
+
+  // 4. INSUFFICIENT (incl. empty): refusal without any model call.
+  if (mode === "refuse") {
+    const persistErr = await persistAssistant(
+      REFUSAL_TEXT, "insufficient", sources,
+      { prompt: null }, { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+    );
+    console.log(JSON.stringify({
+      fn: "ask", caller, tenant_id: tenantId, path: "refusal",
+      verdict: gate.verdict, reason: gate.reason, evidence: retrieved.length,
+    }));
+    return json(200, {
+      ok: true, answer: REFUSAL_TEXT, label: "insufficient",
+      citations: [], evidence_count: retrieved.length,
+      gate: { verdict: gate.verdict, reason: gate.reason },
+      grounded: null, conversation_id: convId,
+      persisted: persistErr === null,
+      ...(persistErr ? { persistence_error: persistErr } : {}),
+    });
+  }
+
+  // 5. Grounded generation (Bedrock Converse, temp 0.0, model from secrets).
+  const modelId = Deno.env.get("ANSWER_MODEL_ID") ?? "";
+  const region = Deno.env.get("AWS_DEFAULT_REGION") ?? "";
+  const accessKeyId = Deno.env.get("AWS_ACCESS_KEY_ID") ?? "";
+  const secretAccessKey = Deno.env.get("AWS_SECRET_ACCESS_KEY") ?? "";
+  if (!modelId) return json(500, { ok: false, error: "ANSWER_MODEL_ID is not configured" });
+  if (!region || !accessKeyId || !secretAccessKey) {
+    return json(500, { ok: false, error: "AWS credentials are not configured" });
+  }
+  const { block, refs } = buildEvidenceBlock(retrieved);
+  void refs;
+  const { template, version: promptVersion } = renderPrompt(mode, query, block);
+  const tG0 = performance.now();
+  let rawAnswer: string;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  try {
+    const client = new BedrockRuntimeClient({
+      region,
+      credentials: { accessKeyId, secretAccessKey },
+      requestHandler: new FetchHttpHandler({ requestTimeout: 120000 }),
+    });
+    const resp = await client.send(new ConverseCommand({
+      modelId,
+      messages: [{ role: "user", content: [{ text: template }] }],
+      inferenceConfig: { temperature: 0.0, maxTokens: MAX_TOKENS },
+    }));
+    const parts = resp.output?.message?.content ?? [];
+    rawAnswer = parts.map((p) => ("text" in p && typeof p.text === "string") ? p.text : "").join("");
+    inputTokens = resp.usage?.inputTokens ?? 0;
+    outputTokens = resp.usage?.outputTokens ?? 0;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const low = msg.toLowerCase();
+    const throttled = low.includes("throttl") || low.includes("too many requests") || low.includes("429");
+    console.log(JSON.stringify({
+      fn: "ask", caller, tenant_id: tenantId, path: "provider-failure",
+      model: modelId, region, throttled, error: msg.slice(0, 200),
+    }));
+    await persistAssistant(
+      `The answer model is currently unavailable (${modelId}). Please try again shortly.`,
+      "provider-error", sources,
+      { answer_model: modelId, prompt: promptVersion },
+      { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+    );    if (throttled) return json(429, { ok: false, error: "answer model throttled; retry shortly" });
+    return json(502, {
+      ok: false,
+      error: `answer generation failed (model ${modelId}, region ${region}). Check model access and configuration, then retry.`,
+    });
+  }
+  const generationMs = Math.round(performance.now() - tG0);
+  const answer = stripThink(rawAnswer);
+  if (!answer) {
+    await persistAssistant(
+      "The model returned an empty response. Please try again.",
+      "provider-error", sources,
+      { answer_model: modelId, prompt: promptVersion },
+      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0) }, null,
+    );
+    return json(502, { ok: false, error: "model returned an empty response" });
+  }
+
+  // 6. Deterministic citation guard (hard failure, never silent).
+  const guard = validateCitations(answer, retrieved, tenantId);
+  if (!guard.ok) {
+    await persistAssistant(answer, "invalid", sources,
+      { answer_model: modelId, prompt: promptVersion },
+      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0) }, false);
+    console.log(JSON.stringify({
+      fn: "ask", caller, tenant_id: tenantId, path: "citation-invalid",
+      errors: guard.errors,
+    }));
+    return json(502, {
+      ok: false, error: "answer failed citation validation",
+      errors: guard.errors, conversation_id: convId,
+    });
+  }
+
+  // 7. Groundedness tripwire (downgrade + note; no regeneration in baseline).
+  const trip = checkGroundedness(answer, retrieved.map((e) => e.content));
+  const label = mode === "direct" ? (trip.grounded ? "direct" : "partial") : mode;
+  const groundingNote = trip.grounded ? null :
+    "Some claims could not be fully verified against the retrieved evidence; treat numbers and qualifiers with care.";
+  const citedIds = [...new Set(parseCitations(answer))];
+  const citations = citedIds.map((n) => sources[n - 1]).filter(Boolean);
+
+  const persistErr = await persistAssistant(answer, label, sources,
+    { answer_model: modelId, prompt: promptVersion, embedding: "voyage-4" },
+    {
+      retrieval_ms: retrievalMs, generation_ms: generationMs,
+      total_ms: Math.round(performance.now() - t0),
+      input_tokens: inputTokens, output_tokens: outputTokens,
+      query_tokens: retrievalTokens,
+    }, trip.grounded);
+  console.log(JSON.stringify({
+    fn: "ask", caller, tenant_id: tenantId, path: "answer",
+    label, verdict: gate.verdict, evidence: retrieved.length,
+    grounded: trip.grounded,
+  }));
+  return json(200, {
+    ok: true, answer, label, citations,
+    evidence_count: retrieved.length,
+    gate: { verdict: gate.verdict, reason: gate.reason },
+    grounded: trip.grounded, grounding_note: groundingNote,
+    conversation_id: convId,
+    persisted: persistErr === null,
+    ...(persistErr ? { persistence_error: persistErr } : {}),
+  });
+});
