@@ -18,7 +18,8 @@
 // Safety properties:
 // - Stateless worker; retries converge (deterministic chunk_ids + INSERT ..
 //   ON CONFLICT DO NOTHING + stale-chunk delete by ID set).
-// - documents.status reaches 'ready' ONLY after chunks persist with content.
+// - documents.status reaches 'ready' ONLY via the embed-worker, after chunks
+//   persist with content AND embeddings (parse alone leaves pending).
 // - Updates (changed content_hash) replace the chunk set; deletes cascade.
 // - Logs metadata only (ids, counts, sizes, hashes). Never content/secrets.
 
@@ -81,7 +82,8 @@ async function failJob(db: Db, jobId: string, docId: string, message: string) {
 }
 
 // Shared process pipeline. All failures are recorded on the job + document;
-// 'ready' is set only after chunks persist.
+// parse success leaves the job processing and the document pending — 'ready'
+// is set only by the embed-worker once embeddings complete.
 async function processDocument(db: Db, job: Job, doc: Doc) {
   await db.from("ingest_jobs").update({
     status: "processing",
@@ -191,22 +193,24 @@ async function processDocument(db: Db, job: Job, doc: Doc) {
     removedStale = count ?? 0;
   }
 
-  // 6. Only now mark ready.
+  // 6. Parse complete — but NOT ready: embeddings are still pending. The
+  // document stays pending and the job stays processing; the embed-worker
+  // (Cron-driven) marks both succeeded/ready once no NULL embeddings remain.
   const { error: docErr } = await db.from("documents").update({
     page_count: totalPages,
     content_hash: contentHash,
     embedding_model: PIPELINE_TAG,
-    status: "ready",
+    status: "pending",
   }).eq("id", doc.id);
   if (docErr) {
     const err = await fail(`document finalize failed for ${doc.storage_path}: ${docErr.message}`);
     return { ok: false as const, error: err };
   }
-  await db.from("ingest_jobs").update({ status: "succeeded", last_error: null }).eq("id", job.id);
+  await db.from("ingest_jobs").update({ status: "processing", last_error: null }).eq("id", job.id);
   return {
     ok: true as const, idempotent: false, document_id: doc.id, job_id: job.id,
     chunks: rows.length, inserted_attempted: attempted, removed_stale: removedStale,
-    page_count: totalPages, content_hash: contentHash,
+    page_count: totalPages, content_hash: contentHash, embedding_pending: true,
   };
 }
 

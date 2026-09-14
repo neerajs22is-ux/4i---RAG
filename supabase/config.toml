@@ -1,0 +1,9 @@
+# Supabase project config (minimal).
+#
+# Only the embed-worker disables gateway JWT verification, because Cron /
+# pg_net service-to-service calls carry a shared secret instead of a user
+# JWT. The secret check inside the function is the gate (401 otherwise).
+# All other functions keep the default (verify_jwt = true).
+
+[functions.embed-worker]
+verify_jwt = false
