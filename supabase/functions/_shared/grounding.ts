@@ -514,3 +514,55 @@ export function checkGroundedness(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Mantle Chat Completions transport helpers (Phase 3C.1.4). Pure functions:
+// map HTTP/body outcomes to the ask endpoint's failure contract and extract
+// the answer text + usage. No I/O, no secrets. Unit-tested; the live call
+// itself stays in ask/index.ts.
+// ---------------------------------------------------------------------------
+
+export const MANTLE_CHAT_PATH = "/chat/completions";
+
+export type MantleFailure =
+  | { kind: "auth"; status: number; message: string }
+  | { kind: "throttled"; status: number; message: string }
+  | { kind: "provider"; status: number; message: string };
+
+export function mapMantleFailure(status: number, bodyText: string): MantleFailure {
+  const body = String(bodyText || "").slice(0, 200);
+  if (status === 401 || status === 403) {
+    return { kind: "auth", status, message: "answer model auth failed; check MANTLE_API_KEY and model access" };
+  }
+  if (status === 429) {
+    return { kind: "throttled", status, message: "answer model throttled; retry shortly" };
+  }
+  return { kind: "provider", status, message: `answer generation failed (status ${status}): ${body}` };
+}
+
+export type MantleParsed =
+  | { ok: true; text: string; inputTokens: number; outputTokens: number }
+  | { ok: false; error: string };
+
+export function parseMantleResponse(body: unknown): MantleParsed {
+  try {
+    const obj = (typeof body === "string" ? JSON.parse(body) : body) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+    } | null;
+    const content = obj?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) {
+      return { ok: false, error: "malformed mantle response: missing choices[0].message.content" };
+    }
+    const toNum = (v: unknown): number =>
+      typeof v === "number" && Number.isFinite(v) ? v : 0;
+    return {
+      ok: true,
+      text: content,
+      inputTokens: toNum(obj?.usage?.prompt_tokens),
+      outputTokens: toNum(obj?.usage?.completion_tokens),
+    };
+  } catch {
+    return { ok: false, error: "malformed mantle response: unparseable body" };
+  }
+}

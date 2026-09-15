@@ -250,6 +250,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     fused_score: e.fused,
     chunk_id: e.row.chunk_id,
     document_id: e.row.document_id,
+    tenant_id: e.row.tenant_id,
     file_name: e.row.file_name,
     page: e.row.page,
     content: e.row.content,

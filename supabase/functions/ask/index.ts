@@ -1,8 +1,8 @@
 // ask — Phase 3C.1 grounded answer-generation baseline.
 //
 // Authenticated query → query-chunks evidence (reused, never duplicated) →
-// deterministic sufficiency gate → grounded generation (Bedrock Converse,
-// temp 0.0) → citation guard → groundedness tripwire → persisted
+// deterministic sufficiency gate → grounded generation (Bedrock Mantle Chat
+// Completions, temp 0.0) → citation guard → groundedness tripwire → persisted
 // conversation. Refusals/clarifications never touch the LLM.
 //
 // Grounding contract: the model is not authoritative; retrieved evidence is.
@@ -14,17 +14,13 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
-  BedrockRuntimeClient,
-  ConverseCommand,
-} from "npm:@aws-sdk/client-bedrock-runtime@3.1131.0";
-// Edge transport: the SDK's default Node HTTP/2 handler is not implemented
-// in the Edge Runtime; the Smithy fetch handler (same AWS SDK family) is.
-import { FetchHttpHandler } from "npm:@smithy/fetch-http-handler@5.8.0";
-import {
   buildEvidenceBlock,
   checkGroundedness,
   clarificationTrigger,
+  mapMantleFailure,
+  MANTLE_CHAT_PATH,
   parseCitations,
+  parseMantleResponse,
   promptModeFor,
   REFUSAL_TEXT,
   renderPrompt,
@@ -35,6 +31,9 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_TOKENS = 1024;
+// Fixed production Mantle endpoint (ap-south-1). Never taken from the
+// request: the browser must not steer the model-provider URL.
+const MANTLE_BASE_URL = "https://bedrock-mantle.ap-south-1.api.aws/v1";
 
 function stripThink(text: string): string {
   return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
@@ -193,14 +192,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
   }
 
-  // 5. Grounded generation (Bedrock Converse, temp 0.0, model from secrets).
+  // 5. Grounded generation (Bedrock Mantle Chat Completions, temp 0.0,
+  // model from secrets). Server-side fetch with the Bearer key; the AWS
+  // Bedrock Runtime SDK is not used on this path.
   const modelId = Deno.env.get("ANSWER_MODEL_ID") ?? "";
-  const region = Deno.env.get("AWS_DEFAULT_REGION") ?? "";
-  const accessKeyId = Deno.env.get("AWS_ACCESS_KEY_ID") ?? "";
-  const secretAccessKey = Deno.env.get("AWS_SECRET_ACCESS_KEY") ?? "";
+  const mantleKey = Deno.env.get("MANTLE_API_KEY") ?? "";
   if (!modelId) return json(500, { ok: false, error: "ANSWER_MODEL_ID is not configured" });
-  if (!region || !accessKeyId || !secretAccessKey) {
-    return json(500, { ok: false, error: "AWS credentials are not configured" });
+  if (!mantleKey) {
+    return json(500, { ok: false, error: "answer model credentials are not configured" });
   }
   const { block, refs } = buildEvidenceBlock(retrieved);
   void refs;
@@ -210,37 +209,63 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let inputTokens = 0;
   let outputTokens = 0;
   try {
-    const client = new BedrockRuntimeClient({
-      region,
-      credentials: { accessKeyId, secretAccessKey },
-      requestHandler: new FetchHttpHandler({ requestTimeout: 120000 }),
+    const r = await fetch(`${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${mantleKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: "user", content: template }],
+        temperature: 0.0,
+        max_tokens: MAX_TOKENS,
+      }),
     });
-    const resp = await client.send(new ConverseCommand({
-      modelId,
-      messages: [{ role: "user", content: [{ text: template }] }],
-      inferenceConfig: { temperature: 0.0, maxTokens: MAX_TOKENS },
-    }));
-    const parts = resp.output?.message?.content ?? [];
-    rawAnswer = parts.map((p) => ("text" in p && typeof p.text === "string") ? p.text : "").join("");
-    inputTokens = resp.usage?.inputTokens ?? 0;
-    outputTokens = resp.usage?.outputTokens ?? 0;
+    if (!r.ok) {
+      const mapped = mapMantleFailure(r.status, await r.text());
+      console.log(JSON.stringify({
+        fn: "ask", caller, tenant_id: tenantId, path: "provider-failure",
+        model: modelId, failure: mapped.kind, status: mapped.status,
+      }));
+      await persistAssistant(
+        `The answer model is currently unavailable (${modelId}). Please try again shortly.`,
+        "provider-error", sources,
+        { answer_model: modelId, prompt: promptVersion },
+        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+      );
+      if (mapped.kind === "throttled") return json(429, { ok: false, error: mapped.message });
+      if (mapped.kind === "auth") return json(502, { ok: false, error: mapped.message });
+      return json(502, { ok: false, error: mapped.message });
+    }
+    const parsed = parseMantleResponse(await r.json());
+    if (!parsed.ok) {
+      await persistAssistant(
+        "The model returned an invalid response. Please try again.",
+        "provider-error", sources,
+        { answer_model: modelId, prompt: promptVersion },
+        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+      );
+      return json(502, { ok: false, error: parsed.error });
+    }
+    rawAnswer = parsed.text;
+    inputTokens = parsed.inputTokens;
+    outputTokens = parsed.outputTokens;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const low = msg.toLowerCase();
-    const throttled = low.includes("throttl") || low.includes("too many requests") || low.includes("429");
     console.log(JSON.stringify({
       fn: "ask", caller, tenant_id: tenantId, path: "provider-failure",
-      model: modelId, region, throttled, error: msg.slice(0, 200),
+      model: modelId, failure: "transport", error: msg.slice(0, 200),
     }));
     await persistAssistant(
       `The answer model is currently unavailable (${modelId}). Please try again shortly.`,
       "provider-error", sources,
       { answer_model: modelId, prompt: promptVersion },
       { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
-    );    if (throttled) return json(429, { ok: false, error: "answer model throttled; retry shortly" });
+    );
     return json(502, {
       ok: false,
-      error: `answer generation failed (model ${modelId}, region ${region}). Check model access and configuration, then retry.`,
+      error: `answer generation failed (model ${modelId}). Check model access and configuration, then retry.`,
     });
   }
   const generationMs = Math.round(performance.now() - tG0);

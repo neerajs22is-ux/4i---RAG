@@ -6,7 +6,9 @@ import { assert, assertEquals } from "jsr:@std/assert";
 import {
   checkGroundedness,
   clarificationTrigger,
+  mapMantleFailure,
   parseCitations,
+  parseMantleResponse,
   promptModeFor,
   renderPrompt,
   validateCitations,
@@ -192,4 +194,52 @@ Deno.test("tripwire: refusal phrasing carries no factual load", () => {
     LEASE_EV,
   );
   assertEquals(r.grounded, true);
+});
+
+// --- Mantle transport mapping ---
+
+Deno.test("mantle: 401/403 map to auth failure", () => {
+  for (const s of [401, 403]) {
+    const f = mapMantleFailure(s, '{"error":"denied"}');
+    assertEquals(f.kind, "auth");
+    assert(!/Bearer\s+[A-Za-z0-9]|sk-[A-Za-z0-9]/i.test(f.message));
+  }
+});
+
+Deno.test("mantle: 429 maps to throttled", () => {
+  const f = mapMantleFailure(429, "slow down");
+  assertEquals(f.kind, "throttled");
+});
+
+Deno.test("mantle: 5xx maps to provider failure with bounded body", () => {
+  const f = mapMantleFailure(500, "x".repeat(500));
+  assertEquals(f.kind, "provider");
+  assert(f.message.includes("status 500"));
+  assert(f.message.length <= 260); // status text + at most 200 body chars
+});
+
+Deno.test("mantle: valid response parses text + usage", () => {
+  const r = parseMantleResponse({
+    choices: [{ message: { content: "The lock-in is 36 months [S1]." } }],
+    usage: { prompt_tokens: 120, completion_tokens: 15 },
+  });
+  assert(r.ok === true && r.text.includes("36 months"));
+  if (r.ok) assertEquals([r.inputTokens, r.outputTokens], [120, 15]);
+});
+
+Deno.test("mantle: missing/empty content fails closed", () => {
+  assertEquals(parseMantleResponse({ choices: [] }).ok, false);
+  assertEquals(parseMantleResponse({ choices: [{ message: {} }] }).ok, false);
+  assertEquals(parseMantleResponse({ choices: [{ message: { content: "   " } }] }).ok, false);
+  assertEquals(parseMantleResponse("not json{{{").ok, false);
+  assertEquals(parseMantleResponse(null).ok, false);
+});
+
+Deno.test("mantle: non-finite usage coerces to zero", () => {
+  const r = parseMantleResponse({
+    choices: [{ message: { content: "Hi [S1]." } }],
+    usage: { prompt_tokens: "many", completion_tokens: null },
+  });
+  assert(r.ok === true);
+  if (r.ok) assertEquals([r.inputTokens, r.outputTokens], [0, 0]);
 });
