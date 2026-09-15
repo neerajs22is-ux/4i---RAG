@@ -1,0 +1,1150 @@
+{
+ "document_id": "97018ad8-28a3-4564-a83c-db9ee5c62443",
+ "cases": {
+  "A1": {
+   "chunk_ids": [
+    "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483"
+   ],
+   "detail": [
+    {
+     "chunk_id": "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+     "page": 1,
+     "matched": [
+      "2025",
+      "income"
+     ]
+    },
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "2025",
+      "income"
+     ]
+    }
+   ]
+  },
+  "A2": {
+   "chunk_ids": [
+    "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483"
+   ],
+   "detail": [
+    {
+     "chunk_id": "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+     "page": 1,
+     "matched": [
+      "extends",
+      "india",
+      "whole"
+     ]
+    },
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "india"
+     ]
+    }
+   ]
+  },
+  "A3": {
+   "chunk_ids": [
+    "2b3118a816684b615bdba9e57e84efd0620f40a61dac5b3d574955b76a8e9485",
+    "88a3c1131b518c9d3c54820f7481fe7bad7e9d0df50bc4a24e31ba5e02fbe19c"
+   ],
+   "detail": [
+    {
+     "chunk_id": "2b3118a816684b615bdba9e57e84efd0620f40a61dac5b3d574955b76a8e9485",
+     "page": 26,
+     "matched": [
+      "year"
+     ]
+    },
+    {
+     "chunk_id": "88a3c1131b518c9d3c54820f7481fe7bad7e9d0df50bc4a24e31ba5e02fbe19c",
+     "page": 26,
+     "matched": [
+      "april",
+      "commencing",
+      "financial",
+      "months",
+      "twelve",
+      "year"
+     ]
+    }
+   ]
+  },
+  "A4": {
+   "chunk_ids": [
+    "6f7434853e95b93d96ebf10e3d2cbf977ee3575853849120855b19590d9ec6b8",
+    "e0241f3209646fd78a7fd839011cee6a57daffb68e7082f85d7579cd5dc2871b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "6f7434853e95b93d96ebf10e3d2cbf977ee3575853849120855b19590d9ec6b8",
+     "page": 42,
+     "matched": [
+      "advance",
+      "annuity",
+      "balance",
+      "commission",
+      "fees",
+      "fund",
+      "gratuity",
+      "leave",
+      "lieu",
+      "pension",
+      "perquisites",
+      "profits",
+      "salary",
+      "transferred",
+      "wages"
+     ]
+    },
+    {
+     "chunk_id": "e0241f3209646fd78a7fd839011cee6a57daffb68e7082f85d7579cd5dc2871b",
+     "page": 42,
+     "matched": [
+      "agniveer",
+      "corpus",
+      "employer",
+      "fund",
+      "government",
+      "pension"
+     ]
+    }
+   ]
+  },
+  "A5": {
+   "chunk_ids": [
+    "03f1a2b789401f9001bc27e177f7180a6f762f7faaffb4fd23c4d4adbde43eb9",
+    "04d5d56976f231a1cd4457ed0bb73e7b4ff60c172c27c2ea9bebf4b7ca5db5c3",
+    "e230c718e446ef51b13e2bf3c32b338e7cd0702f882adc38c9f62aed7bc7de9b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "03f1a2b789401f9001bc27e177f7180a6f762f7faaffb4fd23c4d4adbde43eb9",
+     "page": 3,
+     "matched": [
+      "section"
+     ]
+    },
+    {
+     "chunk_id": "04d5d56976f231a1cd4457ed0bb73e7b4ff60c172c27c2ea9bebf4b7ca5db5c3",
+     "page": 3,
+     "matched": [
+      "section"
+     ]
+    },
+    {
+     "chunk_id": "e230c718e446ef51b13e2bf3c32b338e7cd0702f882adc38c9f62aed7bc7de9b",
+     "page": 3,
+     "matched": [
+      "annual",
+      "determined",
+      "section",
+      "value"
+     ]
+    }
+   ]
+  },
+  "A6": {
+   "chunk_ids": [
+    "03f1a2b789401f9001bc27e177f7180a6f762f7faaffb4fd23c4d4adbde43eb9",
+    "04d5d56976f231a1cd4457ed0bb73e7b4ff60c172c27c2ea9bebf4b7ca5db5c3",
+    "e230c718e446ef51b13e2bf3c32b338e7cd0702f882adc38c9f62aed7bc7de9b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "03f1a2b789401f9001bc27e177f7180a6f762f7faaffb4fd23c4d4adbde43eb9",
+     "page": 3,
+     "matched": [
+      "assessment",
+      "deemed",
+      "default",
+      "other",
+      "person"
+     ]
+    },
+    {
+     "chunk_id": "04d5d56976f231a1cd4457ed0bb73e7b4ff60c172c27c2ea9bebf4b7ca5db5c3",
+     "page": 3,
+     "matched": [
+      "person"
+     ]
+    },
+    {
+     "chunk_id": "e230c718e446ef51b13e2bf3c32b338e7cd0702f882adc38c9f62aed7bc7de9b",
+     "page": 3,
+     "matched": [
+      "assessment",
+      "other",
+      "payable",
+      "person",
+      "whom"
+     ]
+    }
+   ]
+  },
+  "A7": {
+   "chunk_ids": [
+    "6ed963a06447052073a260809a11e556a2b4cb58fc39c5498eaaed8665f75a7d",
+    "8cfa2985be43c35c766c2e5119ed64ed30dc9a523ea1f3e1ca17fa8ca2517ffe",
+    "a974850e5b28aa67410f65e52db33fe89543077a3a8b423ea96ac4d072cff39c"
+   ],
+   "detail": [
+    {
+     "chunk_id": "6ed963a06447052073a260809a11e556a2b4cb58fc39c5498eaaed8665f75a7d",
+     "page": 41,
+     "matched": [
+      "income"
+     ]
+    },
+    {
+     "chunk_id": "8cfa2985be43c35c766c2e5119ed64ed30dc9a523ea1f3e1ca17fa8ca2517ffe",
+     "page": 41,
+     "matched": [
+      "income",
+      "salaries"
+     ]
+    },
+    {
+     "chunk_id": "a974850e5b28aa67410f65e52db33fe89543077a3a8b423ea96ac4d072cff39c",
+     "page": 41,
+     "matched": [
+      "business",
+      "capital",
+      "gains",
+      "house",
+      "income",
+      "other",
+      "profession",
+      "profits",
+      "property",
+      "salaries",
+      "sources"
+     ]
+    }
+   ]
+  },
+  "A8": {
+   "chunk_ids": [
+    "2b3118a816684b615bdba9e57e84efd0620f40a61dac5b3d574955b76a8e9485",
+    "560da8c08d70ca8b41e2f2e2e8675dd051db71d92d3475771d0e70993149e80b",
+    "88a3c1131b518c9d3c54820f7481fe7bad7e9d0df50bc4a24e31ba5e02fbe19c"
+   ],
+   "detail": [
+    {
+     "chunk_id": "2b3118a816684b615bdba9e57e84efd0620f40a61dac5b3d574955b76a8e9485",
+     "page": 26,
+     "matched": [
+      "central"
+     ]
+    },
+    {
+     "chunk_id": "560da8c08d70ca8b41e2f2e2e8675dd051db71d92d3475771d0e70993149e80b",
+     "page": 26,
+     "matched": [
+      "2005",
+      "after",
+      "benefit",
+      "bond",
+      "central",
+      "government",
+      "infrastructure",
+      "issued",
+      "june",
+      "payment",
+      "specified"
+     ]
+    },
+    {
+     "chunk_id": "88a3c1131b518c9d3c54820f7481fe7bad7e9d0df50bc4a24e31ba5e02fbe19c",
+     "page": 26,
+     "matched": [
+      "central",
+      "government",
+      "infrastructure",
+      "maturity",
+      "notified"
+     ]
+    }
+   ]
+  },
+  "B1": {
+   "chunk_ids": [
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+    "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+    "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "formed"
+     ]
+    },
+    {
+     "chunk_id": "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+     "page": 2,
+     "matched": [
+      "amalgamated",
+      "amalgamating",
+      "companies",
+      "company",
+      "formed",
+      "merge",
+      "merger",
+      "they"
+     ]
+    },
+    {
+     "chunk_id": "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b",
+     "page": 2,
+     "matched": [
+      "amalgamated",
+      "amalgamating",
+      "companies",
+      "company"
+     ]
+    }
+   ]
+  },
+  "B2": {
+   "chunk_ids": [
+    "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+    "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+     "page": 2,
+     "matched": [
+      "amalgamated",
+      "amalgamating",
+      "become",
+      "company"
+     ]
+    },
+    {
+     "chunk_id": "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b",
+     "page": 2,
+     "matched": [
+      "already",
+      "amalgamated",
+      "amalgamating",
+      "become",
+      "company",
+      "fourths",
+      "held",
+      "holding",
+      "nominee",
+      "shareholders",
+      "shares",
+      "three",
+      "value"
+     ]
+    }
+   ]
+  },
+  "B3": {
+   "chunk_ids": [
+    "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483"
+   ],
+   "detail": [
+    {
+     "chunk_id": "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+     "page": 1,
+     "matched": [
+      "other"
+     ]
+    },
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "cultivator",
+      "kind",
+      "market",
+      "other",
+      "process",
+      "produce",
+      "receiver",
+      "render",
+      "rent"
+     ]
+    }
+   ]
+  },
+  "B4": {
+   "chunk_ids": [
+    "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+    "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+    "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f"
+   ],
+   "detail": [
+    {
+     "chunk_id": "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+     "page": 8,
+     "matched": [
+      "company",
+      "demerged",
+      "demerger",
+      "pursuant",
+      "resulting",
+      "undertaking",
+      "whose"
+     ]
+    },
+    {
+     "chunk_id": "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+     "page": 8,
+     "matched": [
+      "company",
+      "whose"
+     ]
+    },
+    {
+     "chunk_id": "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f",
+     "page": 8,
+     "matched": [
+      "company",
+      "demerged",
+      "demerger",
+      "resulting",
+      "transferred",
+      "undertaking"
+     ]
+    }
+   ]
+  },
+  "B5": {
+   "chunk_ids": [
+    "62ab0fe21c7768388b7bc864802d21868ecca41a5af37411ced0c1c9f9b24513",
+    "a71e384f13f324362030660abbd30490dd6ec5ab65b540070acd8094e1a42490"
+   ],
+   "detail": [
+    {
+     "chunk_id": "62ab0fe21c7768388b7bc864802d21868ecca41a5af37411ced0c1c9f9b24513",
+     "page": 29,
+     "matched": [
+      "citizen",
+      "days",
+      "india",
+      "resident"
+     ]
+    },
+    {
+     "chunk_id": "a71e384f13f324362030660abbd30490dd6ec5ab65b540070acd8094e1a42490",
+     "page": 29,
+     "matched": [
+      "citizen",
+      "days",
+      "india",
+      "nine",
+      "preceding",
+      "resident",
+      "years"
+     ]
+    }
+   ]
+  },
+  "C1": {
+   "chunk_ids": [
+    "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+    "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7"
+   ],
+   "detail": [
+    {
+     "chunk_id": "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+     "page": 46,
+     "matched": [
+      "section"
+     ]
+    },
+    {
+     "chunk_id": "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7",
+     "page": 46,
+     "matched": [
+      "75000",
+      "salary",
+      "section",
+      "whichever"
+     ]
+    }
+   ]
+  },
+  "C2": {
+   "chunk_ids": [
+    "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7"
+   ],
+   "detail": [
+    {
+     "chunk_id": "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7",
+     "page": 46,
+     "matched": [
+      "50000",
+      "salary",
+      "whichever"
+     ]
+    }
+   ]
+  },
+  "C3": {
+   "chunk_ids": [
+    "13f9874402a8e170b0c4df5451db634e1f860d10c9382ea66164dd3e8f8a3e6e",
+    "4eee492a53ce934a0084800635c5ac3b7087042a60885316932b4dc00fbbf02a",
+    "ea5349d07ae7b92b666055436594cd7c3095983d77696b71292df8cc9dbecb11"
+   ],
+   "detail": [
+    {
+     "chunk_id": "13f9874402a8e170b0c4df5451db634e1f860d10c9382ea66164dd3e8f8a3e6e",
+     "page": 43,
+     "matched": [
+      "approved",
+      "fund",
+      "recognised",
+      "superannuation"
+     ]
+    },
+    {
+     "chunk_id": "4eee492a53ce934a0084800635c5ac3b7087042a60885316932b4dc00fbbf02a",
+     "page": 43,
+     "matched": [
+      "750000",
+      "aggregate",
+      "approved",
+      "fund",
+      "recognised",
+      "scheme",
+      "section",
+      "superannuation",
+      "year"
+     ]
+    },
+    {
+     "chunk_id": "ea5349d07ae7b92b666055436594cd7c3095983d77696b71292df8cc9dbecb11",
+     "page": 43,
+     "matched": [
+      "approved"
+     ]
+    }
+   ]
+  },
+  "C4": {
+   "chunk_ids": [
+    "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483"
+   ],
+   "detail": [
+    {
+     "chunk_id": "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+     "page": 1,
+     "matched": [
+      "2025",
+      "2026",
+      "april",
+      "force",
+      "otherwise",
+      "provided",
+      "save"
+     ]
+    },
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "2025",
+      "assented"
+     ]
+    }
+   ]
+  },
+  "C5": {
+   "chunk_ids": [
+    "32a8a03be4896401ad4e170473b530368a81c31e679b67218ec15b5e9dcee678",
+    "50e924a2b59a31f22db4c1024b15373eb9e842ec444393e601b3813d4c0dd236",
+    "da053fa61f8d0f40bcc36778d76fc852f589e5da219816ec6f778e2f7d8751f1"
+   ],
+   "detail": [
+    {
+     "chunk_id": "32a8a03be4896401ad4e170473b530368a81c31e679b67218ec15b5e9dcee678",
+     "page": 58,
+     "matched": [
+      "allowance",
+      "allowances",
+      "dearness",
+      "employee",
+      "excludes",
+      "other",
+      "perquisites",
+      "provide",
+      "salary",
+      "terms"
+     ]
+    },
+    {
+     "chunk_id": "50e924a2b59a31f22db4c1024b15373eb9e842ec444393e601b3813d4c0dd236",
+     "page": 58,
+     "matched": [
+      "employee",
+      "provide"
+     ]
+    },
+    {
+     "chunk_id": "da053fa61f8d0f40bcc36778d76fc852f589e5da219816ec6f778e2f7d8751f1",
+     "page": 58,
+     "matched": [
+      "employee",
+      "other"
+     ]
+    }
+   ]
+  },
+  "D1": {
+   "chunk_ids": [
+    "68495c6e21a862bf47a99d387a0b1510dd0c135cdf49f6b4f732522e59a3c55b",
+    "98489710136ab659863d85b4d2c9ac9eadb7bf8f73045dfb54f1529ea9925f0b",
+    "a8ddc97f53939725475c6af4fc942b087e3fca36acaf2c6bae3431169dfe4300"
+   ],
+   "detail": [
+    {
+     "chunk_id": "68495c6e21a862bf47a99d387a0b1510dd0c135cdf49f6b4f732522e59a3c55b",
+     "page": 27,
+     "matched": [
+      "deemed",
+      "income",
+      "india",
+      "received",
+      "resident"
+     ]
+    },
+    {
+     "chunk_id": "98489710136ab659863d85b4d2c9ac9eadb7bf8f73045dfb54f1529ea9925f0b",
+     "page": 27,
+     "matched": [
+      "accruing",
+      "business",
+      "deemed",
+      "income",
+      "india",
+      "only",
+      "outside",
+      "profession",
+      "received",
+      "resident"
+     ]
+    },
+    {
+     "chunk_id": "a8ddc97f53939725475c6af4fc942b087e3fca36acaf2c6bae3431169dfe4300",
+     "page": 27,
+     "matched": [
+      "deemed",
+      "india",
+      "received",
+      "resident"
+     ]
+    }
+   ]
+  },
+  "D2": {
+   "chunk_ids": [
+    "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+    "651f9dca4646715a51ab2cce28fce9847a0e6c3b37d4d30054d48658cef72732",
+    "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+    "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b"
+   ],
+   "detail": [
+    {
+     "chunk_id": "a6b112efb2770cd0abde039ccd788ff6433214815a2bd949c5e1ba5b39b6b483",
+     "page": 1,
+     "matched": [
+      "land",
+      "purpose",
+      "revenue"
+     ]
+    },
+    {
+     "chunk_id": "651f9dca4646715a51ab2cce28fce9847a0e6c3b37d4d30054d48658cef72732",
+     "page": 2,
+     "matched": [
+      "assessed",
+      "building",
+      "connection",
+      "dwelling",
+      "immediate",
+      "land",
+      "local",
+      "rate",
+      "reason",
+      "required",
+      "revenue",
+      "specified",
+      "store",
+      "vicinity"
+     ]
+    },
+    {
+     "chunk_id": "a229b2d449d4e2d074326f6cb657164e5d760a60320243b2cc9b8a3415037a31",
+     "page": 2,
+     "matched": [
+      "building",
+      "immediate",
+      "land",
+      "purpose"
+     ]
+    },
+    {
+     "chunk_id": "cd93c082f826d0cfd735bbad99dbcfff34ca8dc87fff3b8ce804808c5506aa6b",
+     "page": 2,
+     "matched": [
+      "immediate"
+     ]
+    }
+   ]
+  },
+  "D3": {
+   "chunk_ids": [
+    "2f46014b93da3887e48e330c94bdb12a4c58d4f46f727bb09caeab7fb063b9a6",
+    "8c9aca2b761caedc2cde892d596d2164822a0bbbf7704d7caa74e7acd7c34572",
+    "edf2bc04f0de365365127a5b33e407fb883617ec8cd3689f0c819c71302dcdd0",
+    "063c68fd50de57c44a830ad22a6707305d4c55403b9e10fdd7aaf0105d940a81",
+    "ade7ea507a2987754af6d51de704bffbb35b468b5db1bc8a508bb2e578a7530a",
+    "cc6dec837cfe51107ca2a40dc12a86bdd140e217e8d1a6425c0d6c3c30da8c39"
+   ],
+   "detail": [
+    {
+     "chunk_id": "2f46014b93da3887e48e330c94bdb12a4c58d4f46f727bb09caeab7fb063b9a6",
+     "page": 52,
+     "matched": [
+      "higher",
+      "value"
+     ]
+    },
+    {
+     "chunk_id": "8c9aca2b761caedc2cde892d596d2164822a0bbbf7704d7caa74e7acd7c34572",
+     "page": 52,
+     "matched": [
+      "local",
+      "rules"
+     ]
+    },
+    {
+     "chunk_id": "edf2bc04f0de365365127a5b33e407fb883617ec8cd3689f0c819c71302dcdd0",
+     "page": 52,
+     "matched": [
+      "value"
+     ]
+    },
+    {
+     "chunk_id": "063c68fd50de57c44a830ad22a6707305d4c55403b9e10fdd7aaf0105d940a81",
+     "page": 53,
+     "matched": [
+      "actual",
+      "actually",
+      "uses",
+      "value"
+     ]
+    },
+    {
+     "chunk_id": "ade7ea507a2987754af6d51de704bffbb35b468b5db1bc8a508bb2e578a7530a",
+     "page": 53,
+     "matched": [
+      "value"
+     ]
+    },
+    {
+     "chunk_id": "cc6dec837cfe51107ca2a40dc12a86bdd140e217e8d1a6425c0d6c3c30da8c39",
+     "page": 53,
+     "matched": [
+      "actual",
+      "actually",
+      "local",
+      "paid",
+      "reduce",
+      "rent",
+      "rules",
+      "taxes",
+      "vacancy",
+      "value"
+     ]
+    }
+   ]
+  },
+  "D4": {
+   "chunk_ids": [
+    "47cdf813be8ff1ecd595b11806aeb4f500098a29f69361951d5eb652ea60bee2",
+    "cf098aee304bced3a2fdab214b568b3d355de904b69bae27601014b76a27d506",
+    "d856e861319ecefb816a023fd4f7f6d4be41d49fbeec53431c3b0f5f5f666b2c",
+    "ce58fa0945caeb619199b1e85bedf9a88f0930df9151b66589afc673b93da045",
+    "43ca128547af0c2939d51dc48ef3dd59b7592dd7de4a79c2e04931eeda0072c5",
+    "9579d5a5e75cec0a14f58267aee6e63bce570766ec4e4a7e5c8daac01f17a035"
+   ],
+   "detail": [
+    {
+     "chunk_id": "47cdf813be8ff1ecd595b11806aeb4f500098a29f69361951d5eb652ea60bee2",
+     "page": 65,
+     "matched": [
+      "depreciation"
+     ]
+    },
+    {
+     "chunk_id": "cf098aee304bced3a2fdab214b568b3d355de904b69bae27601014b76a27d506",
+     "page": 65,
+     "matched": [
+      "aggregate",
+      "amalgamated",
+      "amalgamating",
+      "amalgamation",
+      "asset",
+      "company",
+      "days",
+      "depreciation",
+      "rata"
+     ]
+    },
+    {
+     "chunk_id": "d856e861319ecefb816a023fd4f7f6d4be41d49fbeec53431c3b0f5f5f666b2c",
+     "page": 65,
+     "matched": [
+      "asset",
+      "depreciation"
+     ]
+    },
+    {
+     "chunk_id": "ce58fa0945caeb619199b1e85bedf9a88f0930df9151b66589afc673b93da045",
+     "page": 67,
+     "matched": [
+      "amalgamated",
+      "amalgamating",
+      "amalgamation",
+      "asset",
+      "company",
+      "indian",
+      "sold",
+      "transfer"
+     ]
+    },
+    {
+     "chunk_id": "43ca128547af0c2939d51dc48ef3dd59b7592dd7de4a79c2e04931eeda0072c5",
+     "page": 77,
+     "matched": [
+      "asset",
+      "depreciation"
+     ]
+    },
+    {
+     "chunk_id": "9579d5a5e75cec0a14f58267aee6e63bce570766ec4e4a7e5c8daac01f17a035",
+     "page": 77,
+     "matched": [
+      "amalgamated",
+      "amalgamating",
+      "amalgamation",
+      "asset",
+      "company",
+      "indian",
+      "transfer"
+     ]
+    }
+   ]
+  },
+  "E1": {
+   "chunk_ids": [
+    "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+    "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7",
+    "2e92b509267d60aba1c546f0d1edca7cf52817952e3f8ef7a7adf30cb102a04b",
+    "91ceb365aac0f94e5bc680ecf79f79c92afcdab1a28c81b2b32514002fc4a735"
+   ],
+   "detail": [
+    {
+     "chunk_id": "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+     "page": 46,
+     "matched": [
+      "computed",
+      "table"
+     ]
+    },
+    {
+     "chunk_id": "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7",
+     "page": 46,
+     "matched": [
+      "computed",
+      "entire",
+      "salary"
+     ]
+    },
+    {
+     "chunk_id": "2e92b509267d60aba1c546f0d1edca7cf52817952e3f8ef7a7adf30cb102a04b",
+     "page": 47,
+     "matched": [
+      "entire"
+     ]
+    },
+    {
+     "chunk_id": "91ceb365aac0f94e5bc680ecf79f79c92afcdab1a28c81b2b32514002fc4a735",
+     "page": 47,
+     "matched": [
+      "actual",
+      "half",
+      "limit",
+      "minimum",
+      "month",
+      "notification",
+      "salary",
+      "years"
+     ]
+    }
+   ]
+  },
+  "E2": {
+   "chunk_ids": [
+    "1e29c93c8d1c84cd5815d7e21470b313fd3f6bd673e51d08a11b0a4798c581ab",
+    "8c4765865abe97bd5c77cfa976eba7d3e06901039c34858c870e2f5516e31363",
+    "bf36eac6e9b9d96bc65febcf42628837423d6402819c42c7c03f240d78d4be82"
+   ],
+   "detail": [
+    {
+     "chunk_id": "1e29c93c8d1c84cd5815d7e21470b313fd3f6bd673e51d08a11b0a4798c581ab",
+     "page": 40,
+     "matched": [
+      "conditions",
+      "enumerated",
+      "incomes",
+      "schedule",
+      "subject"
+     ]
+    },
+    {
+     "chunk_id": "8c4765865abe97bd5c77cfa976eba7d3e06901039c34858c870e2f5516e31363",
+     "page": 40,
+     "matched": [
+      "incomes"
+     ]
+    },
+    {
+     "chunk_id": "bf36eac6e9b9d96bc65febcf42628837423d6402819c42c7c03f240d78d4be82",
+     "page": 40,
+     "matched": [
+      "conditions",
+      "enumerated",
+      "incomes",
+      "schedule",
+      "subject",
+      "viii"
+     ]
+    }
+   ]
+  },
+  "E3": {
+   "chunk_ids": [
+    "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+    "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7"
+   ],
+   "detail": [
+    {
+     "chunk_id": "b449d07af49e890cde14953cf17992c3f1d0d97d8ab3806684ae3973889cdca3",
+     "page": 46,
+     "matched": [
+      "amount",
+      "section"
+     ]
+    },
+    {
+     "chunk_id": "d72a6ec95a2210bf90821ce7840ca99b45aee4a40c0a0a4cee5fc83f5c4799b7",
+     "page": 46,
+     "matched": [
+      "75000",
+      "amount",
+      "section"
+     ]
+    }
+   ]
+  },
+  "E4": {
+   "chunk_ids": [
+    "47cdf813be8ff1ecd595b11806aeb4f500098a29f69361951d5eb652ea60bee2",
+    "cf098aee304bced3a2fdab214b568b3d355de904b69bae27601014b76a27d506",
+    "d856e861319ecefb816a023fd4f7f6d4be41d49fbeec53431c3b0f5f5f666b2c"
+   ],
+   "detail": [
+    {
+     "chunk_id": "47cdf813be8ff1ecd595b11806aeb4f500098a29f69361951d5eb652ea60bee2",
+     "page": 65,
+     "matched": [
+      "depreciation"
+     ]
+    },
+    {
+     "chunk_id": "cf098aee304bced3a2fdab214b568b3d355de904b69bae27601014b76a27d506",
+     "page": 65,
+     "matched": [
+      "depreciation",
+      "rata"
+     ]
+    },
+    {
+     "chunk_id": "d856e861319ecefb816a023fd4f7f6d4be41d49fbeec53431c3b0f5f5f666b2c",
+     "page": 65,
+     "matched": [
+      "depreciation"
+     ]
+    }
+   ]
+  },
+  "F1": {
+   "chunk_ids": [],
+   "note": "no source pages (refusal case)"
+  },
+  "F2": {
+   "chunk_ids": [],
+   "note": "no source pages (refusal case)"
+  },
+  "F3": {
+   "chunk_ids": [],
+   "note": "no source pages (refusal case)"
+  },
+  "F4": {
+   "chunk_ids": [],
+   "note": "no source pages (refusal case)"
+  },
+  "G1": {
+   "chunk_ids": [
+    "15fa1d2af7da2bd385ba58680ffc26d6b562defc31c87055d780730394cd5ed3",
+    "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+    "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+    "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f"
+   ],
+   "detail": [
+    {
+     "chunk_id": "15fa1d2af7da2bd385ba58680ffc26d6b562defc31c87055d780730394cd5ed3",
+     "page": 8,
+     "matched": [
+      "registration"
+     ]
+    },
+    {
+     "chunk_id": "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+     "page": 8,
+     "matched": [
+      "1912",
+      "2002",
+      "multi",
+      "registered",
+      "registration",
+      "state"
+     ]
+    },
+    {
+     "chunk_id": "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+     "page": 8,
+     "matched": [
+      "state",
+      "substituted"
+     ]
+    },
+    {
+     "chunk_id": "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f",
+     "page": 8,
+     "matched": [
+      "1912",
+      "2026",
+      "registered",
+      "state",
+      "substituted"
+     ]
+    }
+   ]
+  },
+  "G2": {
+   "chunk_ids": [
+    "063c68fd50de57c44a830ad22a6707305d4c55403b9e10fdd7aaf0105d940a81",
+    "ade7ea507a2987754af6d51de704bffbb35b468b5db1bc8a508bb2e578a7530a"
+   ],
+   "detail": [
+    {
+     "chunk_id": "063c68fd50de57c44a830ad22a6707305d4c55403b9e10fdd7aaf0105d940a81",
+     "page": 53,
+     "matched": [
+      "certificate",
+      "completion",
+      "years"
+     ]
+    },
+    {
+     "chunk_id": "ade7ea507a2987754af6d51de704bffbb35b468b5db1bc8a508bb2e578a7530a",
+     "page": 53,
+     "matched": [
+      "2026"
+     ]
+    }
+   ]
+  },
+  "G3": {
+   "chunk_ids": [
+    "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5"
+   ],
+   "detail": [
+    {
+     "chunk_id": "4ca9cf1f184bc8ed3365c06128b7d3b43183a32aef530a2e4d369d041e96dfc5",
+     "page": 1,
+     "matched": [
+      "2026",
+      "april",
+      "title"
+     ]
+    }
+   ]
+  },
+  "G4": {
+   "chunk_ids": [
+    "15fa1d2af7da2bd385ba58680ffc26d6b562defc31c87055d780730394cd5ed3",
+    "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+    "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+    "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f"
+   ],
+   "detail": [
+    {
+     "chunk_id": "15fa1d2af7da2bd385ba58680ffc26d6b562defc31c87055d780730394cd5ed3",
+     "page": 8,
+     "matched": [
+      "registration"
+     ]
+    },
+    {
+     "chunk_id": "1ee38a427eb9e1fa6075065ee9edf1475e0e6628cc5ea90c88a0f2a2e6753a36",
+     "page": 8,
+     "matched": [
+      "multi",
+      "registration",
+      "state"
+     ]
+    },
+    {
+     "chunk_id": "3f0351dbba803b26c9694929bc1ceef1a34f7137d076b8a8023bd2b82219b2f6",
+     "page": 8,
+     "matched": [
+      "clause",
+      "state",
+      "substituted"
+     ]
+    },
+    {
+     "chunk_id": "a7d2450fab7d587ab636cef012706ac704c52e47f437f10923e921b7b24bf32f",
+     "page": 8,
+     "matched": [
+      "2026",
+      "clause",
+      "prior",
+      "state",
+      "substituted"
+     ]
+    }
+   ]
+  }
+ },
+ "unresolved": []
+}

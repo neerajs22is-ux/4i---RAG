@@ -1,0 +1,767 @@
+{
+ "cases": [
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "The Income-tax Act, 2025.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "Income-tax Act, 2025"
+   ],
+   "expected_source_pages": [
+    1
+   ],
+   "expected_source_sections": [
+    "§1(1)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A1",
+   "notes": "directly supported",
+   "question": "What is the short title of the Income-tax Act, 2025?",
+   "expected_citations": [
+    "§1(1), PDF p.1"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "It extends to the whole of India.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "whole of India"
+   ],
+   "expected_source_pages": [
+    1
+   ],
+   "expected_source_sections": [
+    "§1(2)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A2",
+   "notes": "directly supported",
+   "question": "To what geographical extent does the Income-tax Act, 2025 apply?",
+   "expected_citations": [
+    "§1(2), PDF p.1"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "The twelve months of the financial year commencing on the 1st April.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "twelve months",
+    "financial year",
+    "1st April"
+   ],
+   "expected_source_pages": [
+    26
+   ],
+   "expected_source_sections": [
+    "§3(1)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A3",
+   "notes": "directly supported",
+   "question": "How is 'tax year' defined in the Act?",
+   "expected_citations": [
+    "§3(1), PDF p.26"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "Wages, annuity/pension, gratuity, fees/commission, perquisites, profits in lieu of salary, advance salary, leave encashment, PF accretions/transferred balance, government/employer pension contributions, Agniveer Corpus Fund contributions.",
+   "expected_behavior": "answer directly (list)",
+   "expected_key_facts": [
+    "§16 items (a)–(l)"
+   ],
+   "expected_source_pages": [
+    42
+   ],
+   "expected_source_sections": [
+    "§16(a)–(l)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A4",
+   "notes": "directly supported; long list — evaluator checks key items, not exact wording",
+   "question": "What does 'salary' include under section 16?",
+   "expected_citations": [
+    "§16, PDF p.42"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "Its annual value as determined under section 21.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "section 21"
+   ],
+   "expected_source_pages": [
+    3
+   ],
+   "expected_source_sections": [
+    "§2(7)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A5",
+   "notes": "directly supported",
+   "question": "What is 'annual value' in relation to a property?",
+   "expected_citations": [
+    "§2(7), PDF p.3"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "A person by whom tax/other sums are payable, including persons under assessment proceedings, deemed assessees, and assessees in default.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "payable + proceedings + deemed + in-default"
+   ],
+   "expected_source_pages": [
+    3
+   ],
+   "expected_source_sections": [
+    "§2(11)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A6",
+   "notes": "directly supported",
+   "question": "Who is an 'assessee' under the Act?",
+   "expected_citations": [
+    "§2(11), PDF p.3"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "Salaries; income from house property; profits and gains of business or profession; capital gains; income from other sources.",
+   "expected_behavior": "answer directly (list)",
+   "expected_key_facts": [
+    "five heads"
+   ],
+   "expected_source_pages": [
+    41
+   ],
+   "expected_source_sections": [
+    "Ch.IV heads listing"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A7",
+   "notes": "directly supported",
+   "question": "What are the five heads of income?",
+   "expected_citations": [
+    "Ch.IV listing, PDF p.41"
+   ]
+  },
+  {
+   "category": "factual",
+   "chunk_id": "TBD",
+   "expected_answer": "A bond issued on/after 1st June 2005 by specified infrastructure entities/banks, with no pre-maturity payment/benefit, notified by the Central Government.",
+   "expected_behavior": "answer directly",
+   "expected_key_facts": [
+    "1st June, 2005",
+    "no pre-maturity payment"
+   ],
+   "expected_source_pages": [
+    26
+   ],
+   "expected_source_sections": [
+    "§2(112)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "A8",
+   "notes": "directly supported",
+   "question": "What is a 'zero coupon bond' and from what date must it be issued?",
+   "expected_citations": [
+    "§2(112), PDF p.26"
+   ]
+  },
+  {
+   "category": "lexical",
+   "chunk_id": "TBD",
+   "expected_answer": "Amalgamating = companies that merge; amalgamated = the company with which they merge or which is formed by the merger.",
+   "expected_behavior": "answer with exact terms",
+   "expected_key_facts": [
+    "exact term pair"
+   ],
+   "expected_source_pages": [
+    1,
+    2
+   ],
+   "expected_source_sections": [
+    "§2(6)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "B1",
+   "notes": "directly supported; tests defined-term retrieval",
+   "question": "What is the meaning of 'amalgamating company' vs 'amalgamated company'?",
+   "expected_citations": [
+    "§2(6), PDF pp.1–2"
+   ]
+  },
+  {
+   "category": "lexical",
+   "chunk_id": "TBD",
+   "expected_answer": "Shareholders holding not less than three-fourths in value of the amalgamating company's shares (excluding shares already held by the amalgamated company/nominee) must become shareholders of the amalgamated company.",
+   "expected_behavior": "answer exact phrase",
+   "expected_key_facts": [
+    "three-fourths in value"
+   ],
+   "expected_source_pages": [
+    2
+   ],
+   "expected_source_sections": [
+    "§2(6)(c)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "B2",
+   "notes": "directly supported",
+   "question": "What is the 'three-fourths in value' condition in amalgamation?",
+   "expected_citations": [
+    "§2(6)(c), PDF p.2"
+   ]
+  },
+  {
+   "category": "lexical",
+   "chunk_id": "TBD",
+   "expected_answer": "A cultivator/receiver performing ordinary processes to render produce market-fit, or selling such produce without other processing.",
+   "expected_behavior": "answer exact phrase",
+   "expected_key_facts": [
+    "rent-in-kind",
+    "ordinary process",
+    "market-fit"
+   ],
+   "expected_source_pages": [
+    1
+   ],
+   "expected_source_sections": [
+    "§2(5)(b)(ii)–(iii)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "B3",
+   "notes": "directly supported",
+   "question": "What is 'receiver of rent-in-kind' in agricultural income?",
+   "expected_citations": [
+    "§2(5), PDF p.1"
+   ]
+  },
+  {
+   "category": "lexical",
+   "chunk_id": "TBD",
+   "expected_answer": "Demerged = company whose undertaking is transferred; resulting = company receiving it pursuant to a demerger.",
+   "expected_behavior": "answer exact terms",
+   "expected_key_facts": [
+    "exact term pair, in (34)→(35) order"
+   ],
+   "expected_source_pages": [
+    8
+   ],
+   "expected_source_sections": [
+    "§2(34)–(35)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "B4",
+   "notes": "directly supported; definition order visually verified",
+   "question": "What is the difference between a 'demerged company' and a 'resulting company'?",
+   "expected_citations": [
+    "§2(34)–(35), PDF p.8"
+   ]
+  },
+  {
+   "category": "lexical",
+   "chunk_id": "TBD",
+   "expected_answer": "Non-resident in 9/10 preceding years, OR ≤729 days in India in preceding 7 years (plus special citizen/POI rules).",
+   "expected_behavior": "answer exact criteria",
+   "expected_key_facts": [
+    "nine out of ten",
+    "729 days"
+   ],
+   "expected_source_pages": [
+    29
+   ],
+   "expected_source_sections": [
+    "§6(13)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "B5",
+   "notes": "directly supported",
+   "question": "What is 'not ordinarily resident' for an individual under section 6(13)?",
+   "expected_citations": [
+    "§6(13), PDF p.29"
+   ]
+  },
+  {
+   "category": "numeric",
+   "chunk_id": "TBD",
+   "expected_answer": "₹75,000 or the salary, whichever is less.",
+   "expected_behavior": "answer exact amount",
+   "expected_key_facts": [
+    "75000",
+    "section 202(1)"
+   ],
+   "expected_source_pages": [
+    46
+   ],
+   "expected_source_sections": [
+    "§19 Table Sl.2(a)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "C1",
+   "notes": "directly supported; tripwire-critical (75,000 vs 50,000 confusion)",
+   "question": "What is the standard deduction where tax is computed under section 202(1)?",
+   "expected_citations": [
+    "§19 Table Sl.2(a), PDF p.46"
+   ]
+  },
+  {
+   "category": "numeric",
+   "chunk_id": "TBD",
+   "expected_answer": "₹50,000 or the salary, whichever is less.",
+   "expected_behavior": "answer exact amount",
+   "expected_key_facts": [
+    "50000"
+   ],
+   "expected_source_pages": [
+    46
+   ],
+   "expected_source_sections": [
+    "§19 Table Sl.2(b)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "C2",
+   "notes": "directly supported; pair with C1 to test disambiguation",
+   "question": "What is the standard deduction in any other case (not section 202(1))?",
+   "expected_citations": [
+    "§19 Table Sl.2(b), PDF p.46"
+   ]
+  },
+  {
+   "category": "numeric",
+   "chunk_id": "TBD",
+   "expected_answer": "₹7,50,000 in a tax year, aggregate across recognised PF, section 124 scheme, and approved superannuation fund.",
+   "expected_behavior": "answer exact amount",
+   "expected_key_facts": [
+    "750000 canonical; accepted equivalents: 7,50,000 and 7.5 lakh",
+    "three-fund aggregate"
+   ],
+   "expected_source_pages": [
+    43
+   ],
+   "expected_source_sections": [
+    "§17(1)(h)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "C3",
+   "notes": "REVISED (Step 2A): grader must accept 750000 / 7,50,000 / '7.5 lakh' as equivalent; visual ₹ confirmed",
+   "question": "Above what aggregate employer contribution to PF/pension/superannuation does the excess become a perquisite?",
+   "expected_citations": [
+    "§17(1)(h), PDF p.43"
+   ]
+  },
+  {
+   "category": "numeric",
+   "chunk_id": "TBD",
+   "expected_answer": "Assented 21-8-2025; in force 1st April 2026 (save as otherwise provided).",
+   "expected_behavior": "answer both dates",
+   "expected_key_facts": [
+    "21-8-2025",
+    "1st April, 2026"
+   ],
+   "expected_source_pages": [
+    1
+   ],
+   "expected_source_sections": [
+    "assent footnote",
+    "§1(3)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "C4",
+   "notes": "directly supported; dual-date tripwire case",
+   "question": "When did the President assent to the Income-tax Act, 2025, and when does it come into force?",
+   "expected_citations": [
+    "footnote + §1(3), PDF p.1"
+   ]
+  },
+  {
+   "category": "numeric",
+   "chunk_id": "TBD",
+   "expected_answer": "Up to 14% of the employee's salary (including DA if terms provide, excluding other allowances/perquisites).",
+   "expected_behavior": "answer exact figure",
+   "expected_key_facts": [
+    "14%",
+    "dearness allowance",
+    "excludes"
+   ],
+   "expected_source_pages": [
+    58
+   ],
+   "expected_source_sections": [
+    "§29(1)(b)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "C5",
+   "notes": "directly supported",
+   "question": "What pension-scheme contribution percentage is deductible for an employer under section 29(1)(b)?",
+   "expected_citations": [
+    "§29(1)(b), PDF p.58"
+   ]
+  },
+  {
+   "category": "multi",
+   "chunk_id": "TBD",
+   "expected_answer": "Resident: India-received/deemed + India-accruing/deemed + outside-India income (with NOR business/profession carve-out). Non-resident: only India-received/deemed + India-accruing/deemed.",
+   "expected_behavior": "combine §5(1)+§5(2)",
+   "expected_key_facts": [
+    "resident 3 limbs",
+    "non-resident 2 limbs",
+    "NOR carve-out"
+   ],
+   "expected_source_pages": [
+    27
+   ],
+   "expected_source_sections": [
+    "§5(1)",
+    "§5(2)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "D1",
+   "notes": "multi-passage (two sub-sections)",
+   "question": "How is total income of a resident vs a non-resident scoped under section 5?",
+   "expected_citations": [
+    "§5, PDF p.27"
+   ]
+  },
+  {
+   "category": "multi",
+   "chunk_id": "TBD",
+   "expected_answer": "Only if on/immediate vicinity of the land AND (assessed to land revenue/local rate OR outside specified areas) AND required as dwelling/store/out-building by reason of land connection.",
+   "expected_behavior": "combine §2(5)(c)(i)+(ii)",
+   "expected_key_facts": [
+    "vicinity + assessment + purpose conditions"
+   ],
+   "expected_source_pages": [
+    1,
+    2
+   ],
+   "expected_source_sections": [
+    "§2(5)(c)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "D2",
+   "notes": "multi-passage (spans pages)",
+   "question": "When is a building's income treated as agricultural income?",
+   "expected_citations": [
+    "§2(5)(c), PDF pp.1–2"
+   ]
+  },
+  {
+   "category": "multi",
+   "chunk_id": "TBD",
+   "expected_answer": "Higher of reasonable let-out value vs actual rent; vacancy shortfall uses actuals; actually-paid local taxes reduce it.",
+   "expected_behavior": "combine §20(1)+§20(2)+§20(3)",
+   "expected_key_facts": [
+    "three rules"
+   ],
+   "expected_source_pages": [
+    52,
+    53
+   ],
+   "expected_source_sections": [
+    "§20(1)",
+    "§20(2)",
+    "§20(3)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "D3",
+   "notes": "multi-passage",
+   "question": "How is annual value of let property determined, including vacancy and unpaid taxes?",
+   "expected_citations": [
+    "§20, PDF pp.52–53"
+   ]
+  },
+  {
+   "category": "multi",
+   "chunk_id": "TBD",
+   "expected_answer": "Aggregate depreciation capped as if no amalgamation, split pro-rata by days of use; amalgamating→amalgamated (Indian company) asset transfers are excluded from 'transfer'/'sold' (triple-attested).",
+   "expected_behavior": "combine depreciation rule + transfer exclusion",
+   "expected_key_facts": [
+    "pro-rata days",
+    "cap",
+    "Indian-company exclusion ×3"
+   ],
+   "expected_source_pages": [
+    65,
+    67,
+    77
+   ],
+   "expected_source_sections": [
+    "§33(5)",
+    "§33(12)(c)",
+    "§38(6)(a)",
+    "§39 Table Sl.1"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "D4",
+   "notes": "REVISED (Step 2A): second-leg pages corrected to 67/77",
+   "question": "How is depreciation shared on amalgamation, and are such asset transfers 'transfers'?",
+   "expected_citations": [
+    "§33(5) p.65; §33(12)(c) p.67; §38(6)(a)/§39 Table Sl.1 p.77"
+   ]
+  },
+  {
+   "category": "partial",
+   "chunk_id": "TBD",
+   "expected_answer": "Sl.3–5: entire/Act-computed amounts; Sl.6: minimum of (actual, notified limit, half-month salary × years with A/B formula). External Act/notification details beyond the table are not in evidence.",
+   "expected_behavior": "answer supported rows, qualify the rest",
+   "expected_key_facts": [
+    "Sl.3–5 + Sl.6 formula"
+   ],
+   "expected_source_pages": [
+    46,
+    47
+   ],
+   "expected_source_sections": [
+    "§19 Table Sl.3–Sl.6"
+   ],
+   "expected_verdict": "PARTIAL",
+   "id": "E1",
+   "notes": "partial: formula present, external limits referenced-not-stated",
+   "question": "What is the full gratuity deduction table and how is 'other gratuity' computed?",
+   "expected_citations": [
+    "§19 Table, PDF pp.46–47"
+   ]
+  },
+  {
+   "category": "partial",
+   "chunk_id": "TBD",
+   "expected_answer": "Incomes enumerated in Schedule VIII are excluded subject to its conditions; the Schedule's contents/conditions are not in the extracted text.",
+   "expected_behavior": "answer mechanism, qualify conditions",
+   "expected_key_facts": [
+    "Schedule VIII",
+    "conditions apply"
+   ],
+   "expected_source_pages": [
+    40
+   ],
+   "expected_source_sections": [
+    "§12"
+   ],
+   "expected_verdict": "PARTIAL",
+   "id": "E2",
+   "notes": "partial: points to unextracted Schedule",
+   "question": "Which incomes of political parties are excluded and under what conditions?",
+   "expected_citations": [
+    "§12, PDF p.40"
+   ]
+  },
+  {
+   "category": "partial",
+   "chunk_id": "TBD",
+   "expected_answer": "Amount ₹75,000 is stated; the eligibility content of section 202(1) itself is not in evidence.",
+   "expected_behavior": "answer amount, qualify eligibility",
+   "expected_key_facts": [
+    "75000 stated",
+    "202(1) content unstated"
+   ],
+   "expected_source_pages": [
+    46
+   ],
+   "expected_source_sections": [
+    "§19 Table Sl.2(a)"
+   ],
+   "expected_verdict": "PARTIAL",
+   "id": "E3",
+   "notes": "partial: amount without regime definition",
+   "question": "Who is eligible for the section 202(1) standard deduction regime?",
+   "expected_citations": [
+    "§19 Table Sl.2(a), PDF p.46"
+   ]
+  },
+  {
+   "category": "partial",
+   "chunk_id": "TBD",
+   "expected_answer": "Depreciation sharing stated; broader consequences (carry-forward, etc.) not covered in the cited passages.",
+   "expected_behavior": "answer depreciation rule, qualify remainder",
+   "expected_key_facts": [
+    "pro-rata rule stated",
+    "broader consequences unstated"
+   ],
+   "expected_source_pages": [
+    65
+   ],
+   "expected_source_sections": [
+    "§33(5)"
+   ],
+   "expected_verdict": "PARTIAL",
+   "id": "E4",
+   "notes": "partial: must not generalize",
+   "question": "What are the tax consequences of an amalgamation beyond depreciation?",
+   "expected_citations": [
+    "depreciation rule, PDF p.65"
+   ]
+  },
+  {
+   "category": "unanswerable",
+   "chunk_id": "TBD",
+   "expected_answer": "Refusal (no fabrication).",
+   "expected_behavior": "refuse",
+   "expected_key_facts": [],
+   "expected_source_pages": [],
+   "expected_source_sections": [],
+   "expected_verdict": "INSUFFICIENT",
+   "id": "F1",
+   "notes": "unanswerable; must not use general GST knowledge (sole GST mention is incidental input-tax-credit text, p.76)",
+   "question": "What is the GST rate applicable to interior design services?",
+   "expected_citations": []
+  },
+  {
+   "category": "unanswerable",
+   "chunk_id": "TBD",
+   "expected_answer": "Refusal; this is an income-tax Act with no wealth-tax charging provisions in evidence.",
+   "expected_behavior": "refuse",
+   "expected_key_facts": [],
+   "expected_source_pages": [],
+   "expected_source_sections": [],
+   "expected_verdict": "INSUFFICIENT",
+   "id": "F2",
+   "notes": "unanswerable; zero wealth-tax hits across full-document variant search",
+   "question": "Is a person liable to wealth-tax on urban land under this Act?",
+   "expected_citations": []
+  },
+  {
+   "category": "unanswerable",
+   "chunk_id": "TBD",
+   "expected_answer": "Refusal; forms/procedure not in evidence.",
+   "expected_behavior": "refuse",
+   "expected_key_facts": [],
+   "expected_source_pages": [],
+   "expected_source_sections": [],
+   "expected_verdict": "INSUFFICIENT",
+   "id": "F3",
+   "notes": "unanswerable; zero ITR/form hits",
+   "question": "Which ITR form should a salaried individual file?",
+   "expected_citations": []
+  },
+  {
+   "category": "unanswerable",
+   "chunk_id": "TBD",
+   "expected_answer": "Refusal; no rebate/87A provision found in extraction.",
+   "expected_behavior": "refuse",
+   "expected_key_facts": [],
+   "expected_source_pages": [],
+   "expected_source_sections": [],
+   "expected_verdict": "INSUFFICIENT",
+   "id": "F4",
+   "notes": "unanswerable; zero 87A/rebate hits (wording variants searched)",
+   "question": "What rebate amount is available under section 87A?",
+   "expected_citations": []
+  },
+  {
+   "category": "amendment",
+   "chunk_id": "TBD",
+   "expected_answer": "Registered under the 1912 / 2002 Multi-State / any State-UT law; substituted by FA 2026, w.e.f. 1-4-2026.",
+   "expected_behavior": "answer amended text + date",
+   "expected_key_facts": [
+    "three registration routes",
+    "w.e.f. 1-4-2026"
+   ],
+   "expected_source_pages": [
+    8
+   ],
+   "expected_source_sections": [
+    "§2(32) + footnote 1"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "G1",
+   "notes": "directly supported; footnote marker visually verified",
+   "question": "How is 'co-operative society' defined after the Finance Act, 2026 amendment, and when did it take effect?",
+   "expected_citations": [
+    "§2(32), PDF p.8"
+   ]
+  },
+  {
+   "category": "amendment",
+   "chunk_id": "TBD",
+   "expected_answer": "Nil up to two years from end of FY of completion certificate; the '[nil up to]' footnote marker denotes FA 2026 amendment.",
+   "expected_behavior": "answer rule + marker",
+   "expected_key_facts": [
+    "two years",
+    "completion certificate",
+    "amendment marker"
+   ],
+   "expected_source_pages": [
+    53
+   ],
+   "expected_source_sections": [
+    "§20(5) + footnote 5"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "G2",
+   "notes": "directly supported",
+   "question": "For how long is stock-in-trade property annual value taken as nil, and what marks this as amended?",
+   "expected_citations": [
+    "§20(5), PDF p.53"
+   ]
+  },
+  {
+   "category": "amendment",
+   "chunk_id": "TBD",
+   "expected_answer": "Title reflects FA 2026 amendments; the Act itself commences 1st April 2026, amendments effective as footnoted (typically w.e.f. 1-4-2026).",
+   "expected_behavior": "answer both",
+   "expected_key_facts": [
+    "title note",
+    "1st April 2026"
+   ],
+   "expected_source_pages": [
+    1
+   ],
+   "expected_source_sections": [
+    "title",
+    "§1(3)"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "G3",
+   "notes": "directly supported",
+   "question": "What does 'as amended by Finance Act, 2026' on the title page mean for commencement?",
+   "expected_citations": [
+    "title + §1(3), PDF p.1"
+   ]
+  },
+  {
+   "category": "amendment",
+   "chunk_id": "TBD",
+   "expected_answer": "(f) buyback language omitted w.e.f. 1-4-2026 (prior text quoted in footnote 2); clause (32) substituted to add Multi-State/State-UT registration routes, w.e.f. 1-4-2026 (prior text quoted in footnote 1).",
+   "expected_behavior": "answer both footnotes",
+   "expected_key_facts": [
+    "omitted (f)",
+    "substituted (32)",
+    "both w.e.f. 1-4-2026",
+    "prior texts quoted"
+   ],
+   "expected_source_pages": [
+    8
+   ],
+   "expected_source_sections": [
+    "footnotes 1–2"
+   ],
+   "expected_verdict": "SUPPORTED",
+   "id": "G4",
+   "notes": "REVISED (Step 2A): verdict SUPPORTED (was PARTIAL) — prior texts are fully quoted in the PDF, nothing to guess",
+   "question": "What happened to dividend sub-clause (f) and co-operative clause (32) under FA 2026?",
+   "expected_citations": [
+    "footnotes 1–2, PDF p.8"
+   ]
+  }
+ ],
+ "meta": {
+  "chunk_id_status": "TBD — resolve after evaluation-corpus ingestion via production pipeline",
+  "conflict_cases": "No legitimate conflict cases identified from this corpus.",
+  "source": "Step 2A verified report (transcribed verbatim; only Step-2A-specified revisions applied)",
+  "source_pdf": "research_context/Income_Tax_Act_2025_as_amended_by_FA_Act_2026-1-78.pdf",
+  "total": 34,
+  "version": "1.0-proposed"
+ }
+}
