@@ -11,6 +11,7 @@ import {
   parseMantleResponse,
   promptModeFor,
   renderPrompt,
+  tripwireDiagnostics,
   validateCitations,
   verifyEvidence,
   type EvidenceItem,
@@ -61,6 +62,87 @@ Deno.test("gate: conflicting on distinct numbers with the same unit", () => {
   ]);
   assertEquals(r.verdict, "CONFLICTING");
   assert(r.conflicting.length > 0);
+});
+
+Deno.test("gate: incidental bare numbers stay silent (Step 3C.3)", () => {
+  const r = verifyEvidence("What is the notice period?", [
+    ev("The notice period spans 30 days under rule 1234.", { chunk_id: "c1" }),
+    ev("Rule 5678 also covers the notice period fees.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "SUPPORTED");
+  assertEquals(r.conflicting.length, 0);
+});
+
+Deno.test("gate: disjoint number-dense evidence is INSUFFICIENT (Step 3C.3)", () => {
+  const r = verifyEvidence("What is the arbitration clause?", [
+    ev("Section 1234 sets fees of 500 rupees.", { chunk_id: "c1" }),
+    ev("In 2021, section 5678 fixed penalties at 900 rupees.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "INSUFFICIENT");
+  assertEquals(r.conflicting.length, 0);
+});
+
+Deno.test("gate: boilerplate-only negation sharing stays silent (Step 3C.3)", () => {
+  const r = verifyEvidence("What is the notice period?", [
+    ev("The notice period is 30 days, signed and sealed.", { chunk_id: "c1" }),
+    ev("Notice periods were signed and sealed, not reviewed.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "SUPPORTED");
+  assertEquals(r.conflicting.length, 0);
+});
+
+Deno.test("gate: bare number asked about in the question still conflicts (Step 3C.3)", () => {
+  const r = verifyEvidence("Was it section 1234 or section 5678?", [
+    ev("See section 1234 for the rule.", { chunk_id: "c1" }),
+    ev("No, section 5678 governs instead.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "CONFLICTING");
+  assert(r.conflicting.length > 0);
+});
+
+Deno.test("gate: different provisions with different amounts stay silent (Step 3C.3)", () => {
+  const r = verifyEvidence("What is the standard deduction?", [
+    ev("The standard deduction is 75000 rupees.", { chunk_id: "c1" }),
+    ev("The penalty is 5000 rupees.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "SUPPORTED");
+  assertEquals(r.conflicting.length, 0);
+});
+
+Deno.test("gate: same proposition with incompatible dates conflicts (Step 3C.3)", () => {
+  const r = verifyEvidence("When does the Act come into force?", [
+    ev("The Act comes into force on the 1st April, 2026.", { chunk_id: "c1" }),
+    ev("The Act comes into force on the 1st April, 2025.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "CONFLICTING");
+  assert(r.conflicting.length > 0);
+});
+
+Deno.test("gate: amendment succession (prior quote + current text) is not a conflict (Step 3C.5)", () => {
+  const r = verifyEvidence("How is co-operative society defined after the Finance Act, 2026 amendment?", [
+    ev("Substituted by the Finance Act, 2026, w.e.f. 1-4-2026 after amendment. Prior to its substitution, clause read as under: co-operative society means a society registered under the Societies Act, 1912.", { chunk_id: "c1" }),
+    ev("Co-operative society is defined as a society registered under the Societies Act, 1912, or the Multi-State Societies Act, 2002.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "SUPPORTED");
+  assertEquals(r.conflicting.length, 0);
+});
+
+Deno.test("gate: same-version conflict beside currency markers still conflicts (Step 3C.5)", () => {
+  const r = verifyEvidence("What is the employer contribution rate w.e.f. 2026?", [
+    ev("The employer contribution rate is 10% w.e.f. 1-4-2026.", { chunk_id: "c1" }),
+    ev("The employer contribution rate is 12% w.e.f. 1-4-2026.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "CONFLICTING");
+  assert(r.conflicting.length > 0);
+});
+
+Deno.test("gate: amendment effective date beside prior Act year does not conflict (Step 3C.5)", () => {
+  const r = verifyEvidence("When did the 2026 amendment take effect?", [
+    ev("The 2026 amendment sets the clause limit. Prior to amendment, the clause read as under: the 1912 clause limit.", { chunk_id: "c1" }),
+    ev("The amended clause limit takes effect in 2026.", { chunk_id: "c2" }),
+  ]);
+  assertEquals(r.verdict, "SUPPORTED");
+  assertEquals(r.conflicting.length, 0);
 });
 
 Deno.test("gate: insufficient when evidence is disjoint from the question", () => {
@@ -194,6 +276,57 @@ Deno.test("tripwire: refusal phrasing carries no factual load", () => {
     LEASE_EV,
   );
   assertEquals(r.grounded, true);
+});
+
+// --- tripwire diagnostics (Step 3C.19, observability only) ---
+
+Deno.test("tripwire diagnostics: grounded case reports grounded with empty findings", () => {
+  const d = tripwireDiagnostics(checkGroundedness(
+    "The lock-in period is 36 months [S1]. Early termination requires 3 months written notice [S1].",
+    LEASE_EV,
+  ));
+  assertEquals(d.reason, "grounded");
+  assertEquals(d.findings, []);
+  assertEquals(d.counts, { unsupportedClaims: 0, numericMismatches: 0, missingQualifiers: 0 });
+});
+
+Deno.test("tripwire diagnostics: numeric mismatch categorised with bounded findings", () => {
+  const d = tripwireDiagnostics(checkGroundedness("The lock-in period is 48 months [S1].", LEASE_EV));
+  assertEquals(d.reason, "numeric-mismatch");
+  assert(d.findings.length >= 1 && d.findings.length <= 3);
+  assertEquals(d.counts.numericMismatches >= 1, true);
+});
+
+Deno.test("tripwire diagnostics: dropped negation takes priority as missing-qualifier", () => {
+  const d = tripwireDiagnostics(checkGroundedness(
+    "Early termination requires written notice [S1].",
+    ["Early termination does not require written notice under this lease."],
+  ));
+  assertEquals(d.reason, "missing-qualifier");
+  assert(d.findings.length >= 1 && d.findings.length <= 3);
+});
+
+Deno.test("tripwire diagnostics: unsupported sentence categorised when nothing else fires", () => {
+  const d = tripwireDiagnostics(checkGroundedness("The arbitration panel in Mumbai awarded damages [S1].", LEASE_EV));
+  assertEquals(d.reason, "unsupported-claims");
+  assert(d.findings.length >= 1 && d.findings.length <= 3);
+});
+
+Deno.test("tripwire diagnostics: findings stay bounded under many failures", () => {
+  const sentences = [
+    "The lease was signed on 2024-03-15 [S1].",
+    "A penalty of 999 rupees applies [S1].",
+    "The term runs for 77 months [S1].",
+    "Arbitration in Mumbai awarded damages [S1].",
+    "The deposit equals 5 BTC [S1].",
+  ];
+  const d = tripwireDiagnostics(checkGroundedness(sentences.join(" "), LEASE_EV));
+  assertEquals(d.reason, "numeric-mismatch");
+  assert(d.findings.length <= 3);
+  assertEquals(
+    d.counts.unsupportedClaims + d.counts.numericMismatches + d.counts.missingQualifiers >= 2,
+    true,
+  );
 });
 
 // --- Mantle transport mapping ---

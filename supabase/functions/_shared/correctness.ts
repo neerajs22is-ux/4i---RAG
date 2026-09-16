@@ -252,13 +252,25 @@ export function stripCheckerThink(text: string): string {
 }
 
 export type CheckOutcome =
-  | { invoked: true; verdict: CorrectnessVerdict; invalidReason: string | null; latencyMs: number }
+  | {
+    invoked: true;
+    verdict: CorrectnessVerdict;
+    invalidReason: string | null;
+    latencyMs: number;
+    attempts: number;
+    outputChars: number | null;
+    outputTokens: number | null;
+  }
   | { invoked: false };
 
 /**
  * Bounded checker invocation. fetchFn is injected (unit-testable; production
  * passes global fetch). One retry on transport/5xx/timeout only; never on a
  * semantic verdict or malformed output. Never throws with content.
+ *
+ * Observability (Step 3C.19): attempts/outputChars/outputTokens describe the
+ * transport only and never alter the verdict path. outputTokens is null when
+ * the provider omits usage; outputChars is null when no model text arrived.
  */
 export async function evaluateAnswer(opts: {
   fetchFn: typeof fetch;
@@ -272,12 +284,22 @@ export async function evaluateAnswer(opts: {
   const body = buildCorrectnessBody(opts.model, opts.input);
   const evidenceNs = (opts.input.evidence ?? []).map((e) => e.n);
   const t0 = Date.now();
-  const done = (verdict: CorrectnessVerdict, invalidReason: string | null): CheckOutcome => ({
-    invoked: true, verdict, invalidReason, latencyMs: Date.now() - t0,
+  let attempts = 0;
+  const fail = (
+    invalidReason: string,
+    outputChars: number | null = null,
+    outputTokens: number | null = null,
+  ): CheckOutcome => ({
+    invoked: true,
+    verdict: "INVALID",
+    invalidReason,
+    latencyMs: Date.now() - t0,
+    attempts,
+    outputChars,
+    outputTokens,
   });
-  let attempt = 0;
   for (;;) {
-    attempt++;
+    attempts++;
     let res: Response;
     try {
       res = await opts.fetchFn(opts.url, {
@@ -290,31 +312,41 @@ export async function evaluateAnswer(opts: {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      if (attempt < CORRECTNESS_MAX_ATTEMPTS) continue;
+      if (attempts < CORRECTNESS_MAX_ATTEMPTS) continue;
       const timeout = e instanceof DOMException && e.name === "TimeoutError";
-      return done("INVALID", timeout ? "timeout" : "transport");
+      return fail(timeout ? "timeout" : "transport");
     }
     if (!res.ok) {
-      if (res.status >= 500 && attempt < CORRECTNESS_MAX_ATTEMPTS) continue;
-      return done("INVALID", `provider-http-${res.status}`);
+      if (res.status >= 500 && attempts < CORRECTNESS_MAX_ATTEMPTS) continue;
+      return fail(`provider-http-${res.status}`);
     }
     let modelJson: unknown;
     try {
       modelJson = await res.json();
     } catch {
-      return done("INVALID", "invalid-envelope");
+      return fail("invalid-envelope");
     }
     const env = parseMantleResponse(modelJson);
-    if (!env.ok) return done("INVALID", "invalid-envelope");
+    if (!env.ok) return fail("invalid-envelope");
+    const outputChars = env.text.length;
+    const outputTokens = env.outputTokens > 0 ? env.outputTokens : null;
     let raw: unknown;
     try {
       raw = JSON.parse(stripCheckerThink(env.text));
     } catch {
-      return done("INVALID", "invalid-json");
+      return fail("invalid-json", outputChars, outputTokens);
     }
     const v = parseCorrectnessResponse(raw, evidenceNs);
-    if (!v.ok) return done("INVALID", "invalid-schema");
-    if (v.result.verdict === "INVALID") return done("INVALID", "checker-invalid");
-    return done(v.result.verdict, null);
+    if (!v.ok) return fail("invalid-schema", outputChars, outputTokens);
+    if (v.result.verdict === "INVALID") return fail("checker-invalid", outputChars, outputTokens);
+    return {
+      invoked: true,
+      verdict: v.result.verdict,
+      invalidReason: null,
+      latencyMs: Date.now() - t0,
+      attempts,
+      outputChars,
+      outputTokens,
+    };
   }
 }

@@ -296,14 +296,46 @@ function passEnvelope() {
   };
 }
 
-Deno.test("integration: happy path returns PASS verdict", async () => {
+Deno.test("integration: happy path returns PASS verdict with transport metadata", async () => {
   const m = mockFetch(() => okJson(passEnvelope()));
   const o = await evaluateAnswer({
     fetchFn: m.fn, url: "https://x/v1/chat", mantleKey: "k", model: "m", input: checkerInput(),
   });
   assertEquals(m.calls(), 1);
-  assertEquals(o, { invoked: true, verdict: "PASS", invalidReason: null, latencyMs: (o as { latencyMs: number }).latencyMs });
+  assert(o.invoked && o.verdict === "PASS" && o.invalidReason === null);
   assert(typeof (o as { latencyMs: number }).latencyMs === "number");
+  // Observability-only metadata: single attempt, model text length.
+  // NOTE: passEnvelope uses usage {input_tokens, output_tokens}, which the
+  // OpenAI-style parser does not read (it reads prompt_tokens /
+  // completion_tokens), so outputTokens is null here by contract.
+  assert(o.invoked && o.attempts === 1);
+  assert(o.invoked && typeof o.outputChars === "number" && (o.outputChars as number) > 0);
+  assert(o.invoked && o.outputTokens === null);
+});
+
+Deno.test("integration: provider completion_tokens pass through when present", async () => {
+  const m = mockFetch(() => okJson({
+    choices: [{ message: { content: JSON.stringify(validResult()) } }],
+    usage: { prompt_tokens: 12, completion_tokens: 7 },
+  }));
+  const o = await evaluateAnswer({
+    fetchFn: m.fn, url: "https://x/v1/chat", mantleKey: "k", model: "m", input: checkerInput(),
+  });
+  assert(o.invoked && o.verdict === "PASS");
+  assert(o.invoked && o.outputTokens === 7);
+});
+
+Deno.test("integration: absent provider usage becomes null, never guessed", async () => {
+  const m = mockFetch(() => okJson({
+    choices: [{ message: { content: JSON.stringify(validResult()) } }],
+    usage: {},
+  }));
+  const o = await evaluateAnswer({
+    fetchFn: m.fn, url: "https://x/v1/chat", mantleKey: "k", model: "m", input: checkerInput(),
+  });
+  assert(o.invoked && o.verdict === "PASS");
+  assert(o.invoked && o.outputTokens === null);
+  assert(o.invoked && typeof o.outputChars === "number");
 });
 
 Deno.test("integration: think-wrapped JSON parses via stripThink behavior", async () => {
@@ -325,6 +357,7 @@ Deno.test("integration: prose output is INVALID with no retry", async () => {
   });
   assertEquals(m.calls(), 1);
   assert(o.invoked && o.verdict === "INVALID" && o.invalidReason === "invalid-json");
+  assert(o.invoked && o.attempts === 1 && typeof o.outputChars === "number" && o.outputTokens === null);
 });
 
 Deno.test("integration: transport failure retries once then INVALID", async () => {
@@ -334,6 +367,7 @@ Deno.test("integration: transport failure retries once then INVALID", async () =
   });
   assertEquals(m.calls(), 2);
   assert(o.invoked && o.verdict === "INVALID" && o.invalidReason === "transport");
+  assert(o.invoked && o.attempts === 2 && o.outputChars === null && o.outputTokens === null);
 });
 
 Deno.test("integration: 500 retries once, 429 never retried", async () => {

@@ -24,8 +24,12 @@ Metrics per case (all deterministic):
 Observability (structural copies only, no grading): each result also
 preserves the question, the gold expectation (answer/key facts/behavior),
 the exact /ask answer text, citation objects, grounding_note, the
-retrieved evidence list (chunk IDs/pages/ranks/scores in fused order;
-content excluded for size), and persistence metadata. Metrics above are
+retrieved evidence list (chunk IDs/pages/ranks/scores AND bounded evidence
+text in fused order; text is the exact retrieved content, already bounded
+server-side, needed for independent diagnosis per 3C.18), quality-chain
+diagnostics (gate conflicting list, citation-guard, tripwire reason,
+correctness object, stage timings, model/version metadata), and
+persistence metadata. Metrics above are
 unchanged; no correctness/similarity/grading computation is performed.
 
 Usage (never commit credentials):
@@ -63,9 +67,11 @@ LABEL_FOR = {
 }
 
 # Evidence fields preserved per item (structural provenance only).
-# Content is deliberately excluded to keep run artifacts small.
+# Text is the exact retrieved chunk content, bounded server-side to the
+# evidence cut (8 items); tenant_id is deliberately excluded, as are
+# credentials (never present in these payloads).
 EVIDENCE_KEYS = (
-    "chunk_id", "document_id", "file_name", "page",
+    "chunk_id", "document_id", "file_name", "page", "text",
     "fused_rank", "fused_score",
     "dense_score", "dense_rank", "lex_score", "lex_rank",
 )
@@ -96,9 +102,47 @@ def null_observability(case):
         "citations": [],
         "grounding_note": None,
         "evidence": [],
+        "gate_conflicting": [],
+        "citation_guard": None,
+        "tripwire": None,
+        "correctness": None,
+        "timings": None,
+        "model": None,
         "persisted": None,
         "conversation_id": None,
     }
+
+
+def git_commit():
+    """Best-effort source version; None when unavailable (never guessed)."""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            timeout=10, cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        sha = (out.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+def error_detail(e):
+    """Bounded provider/transport detail for HTTP failures (no secrets:
+    these are our own error envelopes). None when unavailable."""
+    try:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+    except Exception:
+        return None
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            return {k: str(data.get(k))[:200] for k in ("error",) if data.get(k)}
+    except Exception:
+        pass
+    return {"body": body[:300]} if body.strip() else None
 
 
 def norm(s):
@@ -257,8 +301,14 @@ def main():
             })
             continue
         except Exception as e:  # noqa: BLE001 - record transport failures honestly
-            results.append({"case_id": cid, "http": -1, "transport_error": str(e)[:200],
-                            **null_observability(case)})
+            rec = {"case_id": cid, "http": -1, "transport_error": str(e)[:200],
+                   **null_observability(case)}
+            if isinstance(e, urllib.error.HTTPError):
+                rec["http"] = e.code
+                detail = error_detail(e)
+                if detail:
+                    rec["error_detail"] = detail
+            results.append(rec)
             continue
         ev_items = []
         if isinstance(rev, dict) and rev.get("ok"):
@@ -268,8 +318,10 @@ def main():
                     ev_items.append(proj)
         ev_ids = [e["chunk_id"] for e in ev_items]
         ev = resp.get("evidence_count") if isinstance(resp, dict) else None
-        gate = (resp.get("gate") or {}).get("verdict") if isinstance(resp, dict) else None
-        gate_reason = (resp.get("gate") or {}).get("reason") if isinstance(resp, dict) else None
+        gate_obj = resp.get("gate") if isinstance(resp, dict) else None
+        gate = (gate_obj or {}).get("verdict") if isinstance(gate_obj, dict) else None
+        gate_reason = (gate_obj or {}).get("reason") if isinstance(gate_obj, dict) else None
+        gate_conflicting = (gate_obj or {}).get("conflicting") if isinstance(gate_obj, dict) else None
         label = resp.get("label") if isinstance(resp, dict) else None
         cites = resp.get("citations", []) if isinstance(resp, dict) else []
         answer = resp.get("answer", "") if isinstance(resp, dict) else ""
@@ -318,6 +370,12 @@ def main():
             "expected_chunks": len(expected),
             "evidence_count": len(ev_ids),
             "evidence": ev_items,
+            "gate_conflicting": gate_conflicting if isinstance(gate_conflicting, list) else [],
+            "citation_guard": resp.get("citation_guard") if isinstance(resp, dict) else None,
+            "tripwire": resp.get("tripwire") if isinstance(resp, dict) else None,
+            "correctness": resp.get("correctness") if isinstance(resp, dict) else None,
+            "timings": resp.get("timings") if isinstance(resp, dict) else None,
+            "model": resp.get("model") if isinstance(resp, dict) else None,
             "retrieval_hit": hit,
             "recall@4": recall(4),
             "recall@8": recall(8),
@@ -351,6 +409,8 @@ def main():
     }
     run = {
         "run_id": "baseline-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "git_commit": git_commit(),
         "cases_file": args.cases,
         "mapping_file": args.mapping,
         "summary": summary,

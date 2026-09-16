@@ -31,6 +31,7 @@ import {
   promptModeFor,
   REFUSAL_TEXT,
   renderPrompt,
+  tripwireDiagnostics,
   validateCitations,
   verifyEvidence,
   type EvidenceItem,
@@ -288,7 +289,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // 6. Deterministic citation guard (hard failure, never silent).
+  const tC0 = performance.now();
   const guard = validateCitations(answer, retrieved, tenantId);
+  const citationGuardMs = Math.round(performance.now() - tC0);
   if (!guard.ok) {
     await persistAssistant(answer, "invalid", sources,
       { answer_model: modelId, prompt: promptVersion },
@@ -304,7 +307,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // 7. Groundedness tripwire (downgrade + note; no regeneration in baseline).
+  // Diagnostics (Step 3C.19): tripwireDiagnostics only explains the EXISTING
+  // decision with a static category + bounded finding refs. No new detection.
+  const tT0 = performance.now();
   const trip = checkGroundedness(answer, retrieved.map((e) => e.content));
+  const tripDiag = tripwireDiagnostics(trip);
+  const tripwireMs = Math.round(performance.now() - tT0);
   let label = mode === "direct" ? (trip.grounded ? "direct" : "partial") : mode;
   let groundingNote: string | null = trip.grounded ? null :
     "Some claims could not be fully verified against the retrieved evidence; treat numbers and qualifiers with care.";
@@ -317,9 +325,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // may downgrade direct->partial with a static note; never upgrades,
   // refuses, regenerates, or touches HTTP status, citations, or tenant
   // decisions. INVALID preserves the original result.
+  const checkerEnabled = Deno.env.get("CORRECTNESS_CHECKER_ENABLED") === "true";
   let correctnessVerdict: CorrectnessVerdict | null = null;
   let correctnessMs: number | null = null;
-  if (shouldRunChecker(Deno.env.get("CORRECTNESS_CHECKER_ENABLED") === "true", gate.verdict)) {
+  let correctness: {
+    invoked: boolean;
+    verdict: CorrectnessVerdict | null;
+    invalid_reason: string | null;
+    latency_ms: number | null;
+    attempts: number;
+    output_chars: number | null;
+    output_tokens: number | null;
+  } | null = null;
+  let aggregationMs: number | null = null;
+  if (shouldRunChecker(checkerEnabled, gate.verdict)) {
     const outcome = await evaluateAnswer({
       fetchFn: fetch,
       url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
@@ -336,7 +355,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (outcome.invoked) {
       correctnessVerdict = outcome.verdict;
       correctnessMs = outcome.latencyMs;
+      correctness = {
+        invoked: true,
+        verdict: outcome.verdict,
+        invalid_reason: outcome.invalidReason,
+        latency_ms: outcome.latencyMs,
+        attempts: outcome.attempts,
+        output_chars: outcome.outputChars,
+        output_tokens: outcome.outputTokens,
+      };
+      const tA0 = performance.now();
       const agg = aggregateCorrectness(label, groundingNote, outcome.verdict);
+      aggregationMs = Math.round(performance.now() - tA0);
       label = agg.label;
       groundingNote = agg.groundingNote;
       console.log(JSON.stringify({
@@ -346,7 +376,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }));
     }
   }
+  if (correctness === null) {
+    // Checker never ran: flag OFF on an eligible gate. (INSUFFICIENT returns
+    // earlier with no correctness key at all; the refusal shape is frozen.)
+    correctness = {
+      invoked: false, verdict: null, invalid_reason: null, latency_ms: null,
+      attempts: 0, output_chars: null, output_tokens: null,
+    };
+  }
 
+  const tP0 = performance.now();
   const persistErr = await persistAssistant(answer, label, sources,
     { answer_model: modelId, prompt: promptVersion, embedding: "voyage-4" },
     {
@@ -358,6 +397,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         ? { correctness_verdict: correctnessVerdict, correctness_ms: correctnessMs }
         : {}),
     }, trip.grounded);
+  const persistenceMs = Math.round(performance.now() - tP0);
   console.log(JSON.stringify({
     fn: "ask", caller, tenant_id: tenantId, path: "answer",
     label, verdict: gate.verdict, evidence: retrieved.length,
@@ -366,8 +406,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
   return json(200, {
     ok: true, answer, label, citations,
     evidence_count: retrieved.length,
-    gate: { verdict: gate.verdict, reason: gate.reason },
+    gate: { verdict: gate.verdict, reason: gate.reason, conflicting: gate.conflicting },
+    citation_guard: { ok: true, reason: "pass" },
+    tripwire: { reason: tripDiag.reason, findings: tripDiag.findings, counts: tripDiag.counts },
+    correctness,
     grounded: trip.grounded, grounding_note: groundingNote,
+    timings: {
+      retrieval_ms: retrievalMs, generation_ms: generationMs,
+      citation_guard_ms: citationGuardMs, tripwire_ms: tripwireMs,
+      aggregation_ms: aggregationMs, correctness_ms: correctnessMs,
+      persistence_ms: persistenceMs, total_ms: Math.round(performance.now() - t0),
+    },
+    model: {
+      provider: "mantle", model: modelId, prompt_version: promptVersion,
+      temperature: 0.0, max_tokens: MAX_TOKENS, correctness_enabled: checkerEnabled,
+    },
     conversation_id: convId,
     persisted: persistErr === null,
     ...(persistErr ? { persistence_error: persistErr } : {}),

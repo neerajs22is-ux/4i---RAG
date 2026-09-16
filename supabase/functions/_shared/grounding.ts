@@ -139,7 +139,7 @@ function normText(text: string): string {
 const UNIT = "(?:%|percent|months?|years?|days?|weeks?|hours?|minutes?|seconds?|dollars?|usd|inr|rs\\.?|kg|km|mm|cm|gb|mb)";
 const NUMBER_RE = new RegExp(
   "\\b\\d{4}-\\d{2}-\\d{2}\\b" +
-    "|\\b\\d{1,2}\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s+\\d{2,4}\\b" +
+    "|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*,?\\s+\\d{2,4}\\b" +
     "|\\b\\d+(?:\\.\\d+)?\\s*(?:" + UNIT + ")" +
     "|\\b\\d{4,}\\b",
   "gi",
@@ -208,10 +208,103 @@ function atomSupported(
   return chunkNorms.some((cn) => cn.includes(atom.norm));
 }
 
+const DATE_RE = /^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{2,4})$/;
+
+// Prior-version quotation markers (Step 3C.5): language that explicitly
+// frames surrounding numbers as SUPERSEDED history rather than live claims
+// ("Prior to its substitution, clause (32) read as under: ... 1912 ...").
+// Deliberately excludes currency markers ("w.e.f.", "with effect from",
+// "substituted by" alone), which assert the CURRENT version and must keep
+// genuine same-version conflicts firing.
+const PRIOR_MARKERS = [
+  "prior to",
+  "read as under",
+  "previously",
+  "before amendment",
+  "as it stood",
+  "omitted",
+  "cease to have effect",
+];
+// Character window around a prior marker inside which a token occurrence
+// counts as prior-version context. Footnote markers sit immediately before
+// the quoted text, so a tight window is both sufficient and precise.
+const PRIOR_WINDOW = 200;
+
+function priorSpans(norm: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const low = flatText(norm);
+  for (const m of PRIOR_MARKERS) {
+    let from = 0;
+    for (;;) {
+      const at = low.indexOf(m, from);
+      if (at < 0) break;
+      spans.push([Math.max(0, at - PRIOR_WINDOW), at + m.length + PRIOR_WINDOW]);
+      from = at + m.length;
+    }
+  }
+  return spans;
+}
+
+// Flattened text (lowercase, single spaces) shared by offset-sensitive
+// helpers so token offsets and marker spans live in the same space.
+function flatText(text: string): string {
+  return String(text || "").toLowerCase().replace(/\s+/g, " ");
+}
+
+// Token offsets under the same filtering as contentTokens, so taint checks
+// see exactly the tokens the pair logic sees.
+function tokenOffsets(text: string): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  const re = new RegExp(WORD_RE.source, WORD_RE.flags);
+  let m: RegExpExecArray | null;
+  const s = flatText(text);
+  while ((m = re.exec(s)) !== null) {
+    const t = m[0];
+    if (STOP.has(t) || t.length <= 2) continue;
+    const list = out.get(t) ?? [];
+    list.push(m.index);
+    out.set(t, list);
+  }
+  return out;
+}
+
+// True when a token occurs in a chunk ONLY inside prior-version context.
+// A token also asserted as current-version text is never tainted.
+function tokenPriorOnly(offsets: Map<string, number[]>, spans: Array<[number, number]>, t: string): boolean {
+  const occ = offsets.get(t);
+  if (!occ || !occ.length || !spans.length) return false;
+  return occ.every((at) => spans.some(([a, b]) => at >= a && at <= b));
+}
+
 function splitValueUnit(num: string): [string, string] {
-  const m = /^([\d.,-]+)\s*(.*)$/.exec(normText(num).replace(/,/g, ""));
-  if (!m) return [normText(num), ""];
+  const norm = normText(num).replace(/,/g, "");
+  // Calendar dates group by month+day ("date:april 1"), years are the values,
+  // so "1st April 2026" vs "1st April 2025" is one comparable group while
+  // unrelated dates stay in disjoint groups.
+  const dm = DATE_RE.exec(norm);
+  if (dm) return [dm[3], `date:${dm[2]} ${parseInt(dm[1], 10)}`];
+  const m = /^([\d.,-]+)\s*(.*)$/.exec(norm);
+  if (!m) return [norm, ""];
   return [m[1], m[2].trim()];
+}
+
+// Canonical sorted-order token pairs shared by two chunks. Mirrors the
+// negation detector's bigram logic: shared phrasing (same claim), not mere
+// shared vocabulary. questionAnchored reports whether any shared pair
+// touches a question content token (the proposition link).
+function sharedPairs(
+  a: Set<string>, b: Set<string>, qToks: Set<string>,
+): { count: number; anchored: boolean } {
+  const sa = [...a].sort();
+  let count = 0;
+  let anchored = false;
+  for (let k = 0; k + 1 < sa.length; k++) {
+    if (b.has(sa[k]) && b.has(sa[k + 1])) {
+      count++;
+      if (qToks.has(sa[k]) || qToks.has(sa[k + 1])) anchored = true;
+    }
+  }
+  return { count, anchored };
 }
 
 function relevantIdx(qToks: Set<string>, chunkTokSets: Set<string>[]): number[] {
@@ -243,40 +336,170 @@ export function verifyEvidence(question: string, evidence: EvidenceItem[]): Gate
   for (const atom of atoms) {
     (atomSupported(atom, chunkNorms) ? base.supported : base.unsupported).push(atom.text);
   }
-
-  // Number conflicts: distinct values, same unit, across relevant chunks.
   const qToks = new Set(contentTokens(question));
+
+  // Pair holder map: canonical sorted token pair -> chunk indexes containing
+  // it CONSECUTIVELY. A shared phrase identifies the SAME claim only when
+  // both chunks contain the pair consecutively; mere co-presence of the two
+  // tokens is not phrasal agreement. Built once per call; deterministic.
+  const pairHolders = new Map<string, Set<number>>();
+  const pairSets: Array<Set<string>> = chunks.map(() => new Set<string>());
+  chunks.forEach((_, i) => {
+    const s = [...chunkTokSets[i]].sort();
+    for (let k = 0; k + 1 < s.length; k++) {
+      const key = s[k] + " " + s[k + 1];
+      pairSets[i].add(key);
+      if (!pairHolders.has(key)) pairHolders.set(key, new Set());
+      pairHolders.get(key)!.add(i);
+    }
+  });
+
+  // True when the two sides share at least TWO phrasal pairs, each anchored
+  // to a question content token (the proposition link), and each occurring
+  // NOWHERE outside the two sides within this evidence set. Single shared
+  // phrases (boilerplate, morphology like income/incomes) stay silent; only
+  // sustained same-claim phrasing counts as a genuine disagreement.
+  // sameVersion optionally disqualifies a pair link when either side uses
+  // the shared phrasing ONLY inside prior-version quotation (Step 3C.5):
+  // an amendment footnote quoting history does not disagree with the
+  // amended provision it annotates. Absent the filter, behavior is
+  // unchanged (valued-unit and negation paths pass none).
+  const exclusiveAnchoredPair = (as: Set<number>, bs: Set<number>, sameVersion?: (idx: number, t1: string, t2: string) => boolean): boolean => {
+    const allowed = new Set<number>([...as, ...bs]);
+    let qualifying = 0;
+    for (const a of as) {
+      for (const key of pairSets[a]) {
+        let hitB = -1;
+        for (const b of bs) {
+          if (b !== a && pairSets[b].has(key)) {
+            hitB = b;
+            break;
+          }
+        }
+        if (hitB < 0) continue;
+        const sep = key.indexOf(" ");
+        const t1 = key.slice(0, sep), t2 = key.slice(sep + 1);
+        if (!qToks.has(t1) && !qToks.has(t2)) continue;
+        if (sameVersion && !(sameVersion(a, t1, t2) && sameVersion(hitB, t1, t2))) continue;
+        const holders = pairHolders.get(key);
+        if (!holders) continue;
+        let exclusive = true;
+        for (const h of holders) {
+          if (!allowed.has(h)) {
+            exclusive = false;
+            break;
+          }
+        }
+        if (!exclusive) continue;
+        qualifying++;
+        if (qualifying >= 2) return true;
+      }
+    }
+    return false;
+  };
+
+  // Precedence (Step 3C.3): disjoint evidence can never be conflicting.
+  // If no chunk shares any question content token, classify INSUFFICIENT
+  // before any conflict detector runs, so unanswerable questions route to
+  // refusal instead of the conflict path.
+  const disjoint = chunkTokSets.every((s) => {
+    for (const t of qToks) if (s.has(t)) return false;
+    return true;
+  });
+  if (disjoint) {
+    return { ...base, verdict: "INSUFFICIENT", reason: "unsupported-claims" };
+  }
+
+  // Number conflicts: distinct values about the SAME question-relative
+  // proposition (Step 3C.3). A genuine conflict requires: (1) the numeric
+  // concept tied to what the question asks; (2) holder chunks making the
+  // same phrasal claim, measured as at least two shared canonical token
+  // pairs each anchored to a question content token and exclusive to the
+  // disagreeing sides (single shared phrases are boilerplate noise);
+  // (3) genuinely incompatible values. Bare numbers (years, sections,
+  // counts) additionally require the question itself to frame the choice
+  // (both values asked about); a single asked-about value needs the same
+  // anchored exclusive-pair link to a holder of another value.
+  // Incidental co-occurrence stays silent.
+  const qNumNorms = new Set(extractNumbers(question).map((n) => normText(n)));
   const rel = relevantIdx(qToks, chunkTokSets);
-  const byUnit = new Map<string, Set<string>>();
+  const byUnit = new Map<string, Map<string, Set<number>>>();
   for (const i of rel) {
     const seenHere = new Set<string>();
     for (const num of extractNumbers(chunkNorms[i])) {
       const [value, unit] = splitValueUnit(num);
       if (!value || seenHere.has(unit + "=" + value)) continue;
       seenHere.add(unit + "=" + value);
-      if (!byUnit.has(unit)) byUnit.set(unit, new Set());
-      byUnit.get(unit)!.add(value);
+      if (!byUnit.has(unit)) byUnit.set(unit, new Map());
+      const holders = byUnit.get(unit)!;
+      if (!holders.has(value)) holders.set(value, new Set());
+      holders.get(value)!.add(i);
     }
   }
+  const anchoredPairBetween = (as: Set<number>, bs: Set<number>): boolean =>
+    exclusiveAnchoredPair(as, bs);
+  // Version-aware link for the bare-number path (Step 3C.5): a shared phrase
+  // cannot establish "same claim" disagreement when either side uses it ONLY
+  // inside explicitly marked prior-version quotation. Per-chunk contexts are
+  // computed lazily from raw content so offsets and marker spans align.
+  const offsetsByChunk = new Map<number, Map<string, number[]>>();
+  const spansByChunk = new Map<number, Array<[number, number]>>();
+  const sameVersionPair = (idx: number, t1: string, t2: string): boolean => {
+    if (!offsetsByChunk.has(idx)) {
+      offsetsByChunk.set(idx, tokenOffsets(chunks[idx].content));
+      spansByChunk.set(idx, priorSpans(chunks[idx].content));
+    }
+    const offs = offsetsByChunk.get(idx)!;
+    const spans = spansByChunk.get(idx)!;
+    return !(tokenPriorOnly(offs, spans, t1) || tokenPriorOnly(offs, spans, t2));
+  };
+  const anchoredPairBetweenCurrent = (as: Set<number>, bs: Set<number>): boolean =>
+    exclusiveAnchoredPair(as, bs, sameVersionPair);
   for (const [unit, values] of [...byUnit.entries()].sort()) {
-    if (values.size > 1) {
-      base.conflicting.push(`conflicting ${unit || "value"}: ${[...values].sort().join(" vs ").slice(0, 120)}`);
+    if (values.size <= 1) continue;
+    if (!unit) {
+      const asked = [...values.keys()].filter((v) => qNumNorms.has(normText(v)));
+      if (asked.length >= 2) {
+        base.conflicting.push(`conflicting ${unit || "value"}: ${[...values.keys()].sort().join(" vs ").slice(0, 120)}`);
+        continue;
+      }
+      if (asked.length === 1) {
+        const others = [...values.entries()].filter(([v]) => v !== asked[0]);
+        const holdersA = values.get(asked[0])!;
+        // Question-relative AND version-aware (Step 3C.5): historical values
+        // quoted inside explicit amendment/supersession language must not
+        // contradict the current value they were superseded by, so links
+        // running solely through prior-version quotation stay silent.
+        if (others.some(([, idxs]) => anchoredPairBetweenCurrent(holdersA, idxs))) {
+          base.conflicting.push(`conflicting ${unit || "value"}: ${[...values.keys()].sort().join(" vs ").slice(0, 120)}`);
+        }
+      }
+      continue;
     }
+    const groups = [...values.values()];
+    let clash = false;
+    outerPair: for (let x = 0; x < groups.length; x++) {
+      for (let y = x + 1; y < groups.length; y++) {
+        if (anchoredPairBetween(groups[x], groups[y])) {
+          clash = true;
+          break outerPair;
+        }
+      }
+    }
+    if (!clash) continue;
+    base.conflicting.push(`conflicting ${unit}: ${[...values.keys()].sort().join(" vs ").slice(0, 120)}`);
   }
-  // Negation conflicts: one relevant chunk negates a shared phrase another affirms.
+  // Negation conflicts: one relevant chunk negates a phrase another affirms.
+  // Same proposition-relative rule as numbers: the shared anchored phrase
+  // must be exclusive to the disagreeing pair within this evidence set,
+  // so boilerplate negation elsewhere in the corpus stays silent.
   const hasCue = (text: string, cue: string) =>
     new RegExp(`\\b${cue.replace("'", "'")}s?\\b`).test(text);
   const negIdx = rel.filter((i) => NEGATION_CUES.some((cue) => hasCue(chunkNorms[i], cue)));
   const posIdx = rel.filter((i) => !negIdx.includes(i));
   outer: for (const n of negIdx) {
     for (const p of posIdx) {
-      const a = [...chunkTokSets[n]].sort();
-      const b = new Set(chunkTokSets[p]);
-      let sharedBigrams = 0;
-      for (let k = 0; k + 1 < a.length; k++) {
-        if (b.has(a[k]) && b.has(a[k + 1])) sharedBigrams++;
-      }
-      if (sharedBigrams >= 1) {
+      if (exclusiveAnchoredPair(new Set([n]), new Set([p]))) {
         base.conflicting.push("negation conflict on shared phrase");
         break outer;
       }
@@ -289,14 +512,10 @@ export function verifyEvidence(question: string, evidence: EvidenceItem[]): Gate
   if (!base.unsupported.length) {
     return { ...base, verdict: "SUPPORTED", reason: "all-supported" };
   }
-  const disjoint = chunkTokSets.every((s) => {
-    for (const t of qToks) if (s.has(t)) return false;
-    return true;
-  });
   return {
     ...base,
-    verdict: disjoint ? "INSUFFICIENT" : "PARTIAL",
-    reason: disjoint ? "unsupported-claims" : "insufficient-evidence",
+    verdict: "PARTIAL",
+    reason: "insufficient-evidence",
   };
 }
 
@@ -462,8 +681,7 @@ export function checkGroundedness(
   const cuePresent = (low: string, cue: string) =>
     new RegExp(`\\b${cue.replace("'", "\\'")}\\b`).test(low);
 
-  for (const sent of splitSentences(cleanAnswer)) {
-    const stoks = contentTokens(sent);
+  for (const sent of splitSentences(cleanAnswer)) {    const stoks = contentTokens(sent);
     if (tokens(sent).length < MIN_SENTENCE_TOKENS) continue;
     const scored = chunkToks
       .map((ct, i) => ({ ratio: overlapRatio(stoks, ct), i }))
@@ -513,6 +731,40 @@ export function checkGroundedness(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Tripwire diagnostics (Step 3C.19, observability only). Explains an EXISTING
+// checkGroundedness decision with a static category + bounded finding refs.
+// No detection logic, no thresholds, no behavior change.
+// ---------------------------------------------------------------------------
+
+export type TripwireReason =
+  | "grounded"
+  | "unsupported-claims"
+  | "numeric-mismatch"
+  | "missing-qualifier";
+
+export type TripwireDiagnostics = {
+  reason: TripwireReason;
+  findings: string[];
+  counts: { unsupportedClaims: number; numericMismatches: number; missingQualifiers: number };
+};
+
+export function tripwireDiagnostics(trip: TripwireResult): TripwireDiagnostics {
+  const counts = {
+    unsupportedClaims: trip.unsupportedClaims.length,
+    numericMismatches: trip.numericMismatches.length,
+    missingQualifiers: trip.missingQualifiers.length,
+  };
+  if (trip.grounded) return { reason: "grounded", findings: [], counts };
+  if (trip.missingQualifiers.length) {
+    return { reason: "missing-qualifier", findings: trip.missingQualifiers.slice(0, 3), counts };
+  }
+  if (trip.numericMismatches.length) {
+    return { reason: "numeric-mismatch", findings: trip.numericMismatches.slice(0, 3), counts };
+  }
+  return { reason: "unsupported-claims", findings: trip.unsupportedClaims.slice(0, 3), counts };
 }
 
 // ---------------------------------------------------------------------------
