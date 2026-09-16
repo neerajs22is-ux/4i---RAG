@@ -14,6 +14,13 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
+  aggregateCorrectness,
+  evaluateAnswer,
+  shouldRunChecker,
+  type CorrectnessVerdict,
+  type GateVerdictIn,
+} from "../_shared/correctness.ts";
+import {
   buildEvidenceBlock,
   checkGroundedness,
   clarificationTrigger,
@@ -298,11 +305,47 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // 7. Groundedness tripwire (downgrade + note; no regeneration in baseline).
   const trip = checkGroundedness(answer, retrieved.map((e) => e.content));
-  const label = mode === "direct" ? (trip.grounded ? "direct" : "partial") : mode;
-  const groundingNote = trip.grounded ? null :
+  let label = mode === "direct" ? (trip.grounded ? "direct" : "partial") : mode;
+  let groundingNote: string | null = trip.grounded ? null :
     "Some claims could not be fully verified against the retrieved evidence; treat numbers and qualifiers with care.";
   const citedIds = [...new Set(parseCitations(answer))];
   const citations = citedIds.map((n) => sources[n - 1]).filter(Boolean);
+
+  // 7b. Bounded answer-correctness check (Step 3C.15: flag-gated, advisory).
+  // Disabled by default the path below is dead code and behavior is exactly
+  // as before. Never runs for INSUFFICIENT (returned above). Advisory only:
+  // may downgrade direct->partial with a static note; never upgrades,
+  // refuses, regenerates, or touches HTTP status, citations, or tenant
+  // decisions. INVALID preserves the original result.
+  let correctnessVerdict: CorrectnessVerdict | null = null;
+  let correctnessMs: number | null = null;
+  if (shouldRunChecker(Deno.env.get("CORRECTNESS_CHECKER_ENABLED") === "true", gate.verdict)) {
+    const outcome = await evaluateAnswer({
+      fetchFn: fetch,
+      url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
+      mantleKey,
+      model: modelId,
+      input: {
+        question: query,
+        answer,
+        evidence: retrieved.map((e, i) => ({ n: i + 1, page: e.page, text: e.content })),
+        gate_verdict: gate.verdict as GateVerdictIn,
+        citations: citedIds.map((n) => ({ n, chunk_ref: sources[n - 1]?.chunk_id ?? `S${n}` })),
+      },
+    });
+    if (outcome.invoked) {
+      correctnessVerdict = outcome.verdict;
+      correctnessMs = outcome.latencyMs;
+      const agg = aggregateCorrectness(label, groundingNote, outcome.verdict);
+      label = agg.label;
+      groundingNote = agg.groundingNote;
+      console.log(JSON.stringify({
+        fn: "ask", caller, tenant_id: tenantId, path: "correctness",
+        verdict: outcome.verdict, invalid_reason: outcome.invalidReason,
+        latency_ms: outcome.latencyMs,
+      }));
+    }
+  }
 
   const persistErr = await persistAssistant(answer, label, sources,
     { answer_model: modelId, prompt: promptVersion, embedding: "voyage-4" },
@@ -311,6 +354,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       total_ms: Math.round(performance.now() - t0),
       input_tokens: inputTokens, output_tokens: outputTokens,
       query_tokens: retrievalTokens,
+      ...(correctnessVerdict !== null
+        ? { correctness_verdict: correctnessVerdict, correctness_ms: correctnessMs }
+        : {}),
     }, trip.grounded);
   console.log(JSON.stringify({
     fn: "ask", caller, tenant_id: tenantId, path: "answer",
