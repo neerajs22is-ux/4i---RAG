@@ -14,7 +14,6 @@ import { parseMantleResponse } from "./grounding.ts";
 
 export const CORRECTNESS_PROMPT_VERSION = "correctness-v1";
 export const CORRECTNESS_CHECKER_NAME = "answer-correctness";
-export const CORRECTNESS_MAX_TOKENS = 1024;
 export const CORRECTNESS_TEMPERATURE = 0.0;
 
 export type GateVerdictIn = "SUPPORTED" | "PARTIAL" | "CONFLICTING";
@@ -100,11 +99,14 @@ export function renderCorrectnessPrompt(input: CorrectnessInput): { template: st
 
 export function buildCorrectnessBody(model: string, input: CorrectnessInput): Record<string, unknown> {
   const { template } = renderCorrectnessPrompt(input);
+  // No application-level max_tokens: the provider/model applies its own
+  // supported maximum (Step 3C.22 — the 1024 ceiling truncated valid
+  // structured judgments). All other bounds (timeout, single retry,
+  // validator, flag) are unchanged.
   return {
     model,
     messages: [{ role: "user", content: template }],
     temperature: CORRECTNESS_TEMPERATURE,
-    max_tokens: CORRECTNESS_MAX_TOKENS,
   };
 }
 

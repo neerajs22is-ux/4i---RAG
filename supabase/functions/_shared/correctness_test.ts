@@ -7,7 +7,6 @@ import {
   aggregateCorrectness,
   buildCorrectnessBody,
   CORRECTNESS_CHECKER_NAME,
-  CORRECTNESS_MAX_TOKENS,
   CORRECTNESS_PROMPT_VERSION,
   CORRECTNESS_TEMPERATURE,
   evaluateAnswer,
@@ -221,8 +220,16 @@ Deno.test("correctness: request body is bounded temp-0.0 provider shape", () => 
   assertEquals(body["model"], "model-id");
   assertEquals(body["temperature"], CORRECTNESS_TEMPERATURE);
   assertEquals(body["temperature"], 0.0);
-  assertEquals(body["max_tokens"], CORRECTNESS_MAX_TOKENS);
   assert(Array.isArray((body["messages"] as unknown[])));
+});
+
+// Step 3C.22: no application-level output cap, and no silent replacement.
+Deno.test("correctness: checker request carries no application max_tokens", () => {
+  const body = buildCorrectnessBody("model-id", sampleInput()) as Record<string, unknown>;
+  assert(!("max_tokens" in body), "application-level max_tokens must be absent");
+  for (const v of Object.values(body)) {
+    assert(v !== 1024 && v !== 2048 && v !== 4096 && v !== 8192, "no invented cap value");
+  }
 });
 
 // 15. Prompt contains no domain-specific vocabulary/rules.
