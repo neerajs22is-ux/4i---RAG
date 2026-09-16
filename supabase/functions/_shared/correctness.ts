@@ -14,7 +14,7 @@ import { parseMantleResponse } from "./grounding.ts";
 
 export const CORRECTNESS_PROMPT_VERSION = "correctness-v1";
 export const CORRECTNESS_CHECKER_NAME = "answer-correctness";
-export const CORRECTNESS_MAX_TOKENS = 400;
+export const CORRECTNESS_MAX_TOKENS = 1024;
 export const CORRECTNESS_TEMPERATURE = 0.0;
 
 export type GateVerdictIn = "SUPPORTED" | "PARTIAL" | "CONFLICTING";
