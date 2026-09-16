@@ -67,6 +67,8 @@ LABEL_FOR = {
 }
 
 # Evidence fields preserved per item (structural provenance only).
+# The /query-chunks contract carries evidence prose as `content`; the
+# artifact schema persists it as `text` (see EVIDENCE_SOURCE).
 # Text is the exact retrieved chunk content, bounded server-side to the
 # evidence cut (8 items); tenant_id is deliberately excluded, as are
 # credentials (never present in these payloads).
@@ -76,12 +78,21 @@ EVIDENCE_KEYS = (
     "dense_score", "dense_rank", "lex_score", "lex_rank",
 )
 
+# Source key in the /query-chunks contract for each artifact key.
+# Only `text` differs (source `content`); everything else is identity.
+# No other alternates are supported: invented field names stay absent.
+EVIDENCE_SOURCE = {"text": "content"}
+
 
 def project_evidence(item):
-    """Bounded structural copy of one /query-chunks evidence item."""
+    """Bounded structural copy of one /query-chunks evidence item.
+
+    Missing `content` persists as text None: never invented, never
+    fetched from another source.
+    """
     if not isinstance(item, dict):
         return {}
-    return {k: item.get(k) for k in EVIDENCE_KEYS}
+    return {k: item.get(EVIDENCE_SOURCE.get(k, k)) for k in EVIDENCE_KEYS}
 
 
 def expected_block(case):
