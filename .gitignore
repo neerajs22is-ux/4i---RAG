@@ -9,6 +9,9 @@ node_modules/
 supabase/.temp/
 __pycache__/
 *.pyc
+# Local agent-tooling downloads (not part of the project).
+.agents/
+skills-lock.json
 # Repository boundary: the research corpus, uploaded test data and generated
 # evaluation run artifacts are NOT published (they can embed source passage
 # text and business documents). They stay in the local working tree; add them
