@@ -1,0 +1,18 @@
+# Local-only credential/session material. Never commit secrets, tokens, or keys.
+.env
+.env.*
+.eval-session.json
+token.txt
+keys.json
+# Local tooling noise (regenerated; never part of the frozen evaluation record).
+node_modules/
+supabase/.temp/
+__pycache__/
+*.pyc
+# Repository boundary: the research corpus, uploaded test data and generated
+# evaluation run artifacts are NOT published (they can embed source passage
+# text and business documents). They stay in the local working tree; add them
+# explicitly (git add -f) if this repository ever becomes private.
+research_context/
+test data/
+eval/runs/

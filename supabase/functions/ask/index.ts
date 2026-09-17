@@ -13,6 +13,8 @@
 // Logs metadata only. Never keys, content, vectors, or tokens.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { combineScopes } from "../_shared/temp-scope.ts";
 import {
   aggregateCorrectness,
   evaluateAnswer,
@@ -50,7 +52,12 @@ function stripThink(text: string): string {
 Deno.serve(async (req: Request): Promise<Response> => {
   const t0 = performance.now();
   const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...corsHeaders(req) },
+    });
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -77,6 +84,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (!query || query.length > 1000) return json(400, { ok: false, error: "invalid query" });
   if (conversationId !== null && !UUID_RE.test(conversationId)) {
     return json(400, { ok: false, error: "invalid conversation_id" });
+  }
+  const notebookId = body.notebook_id != null ? String(body.notebook_id) : null;
+  if (notebookId !== null && !UUID_RE.test(notebookId)) {
+    return json(400, { ok: false, error: "invalid notebook_id" });
   }
 
   const { data: mem } = await db.from("memberships")
@@ -146,6 +157,75 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
   }
 
+  // 1b. B2 — notebook scope resolved SERVER-SIDE (selection is never trusted
+  // from the client). Selected, non-archived, same-tenant documents only.
+  let scopedDocIds: string[] | null = null;
+  if (notebookId) {
+    const { data: nb } = await db.from("notebooks")
+      .select("id").eq("id", notebookId).eq("tenant_id", tenantId).limit(1);
+    if (!nb || nb.length === 0) return json(404, { ok: false, error: "notebook not found" });
+    const { data: srcRows, error: srcErr } = await db.from("notebook_sources")
+      .select("document_id")
+      .eq("notebook_id", notebookId).eq("tenant_id", tenantId).eq("selected", true);
+    if (srcErr) return json(500, { ok: false, error: srcErr.message });
+    const ids = [...new Set((srcRows ?? []).map((r: { document_id: string }) => r.document_id))];
+    if (ids.length > 0) {
+      const { data: live, error: liveErr } = await db.from("documents")
+        .select("id").eq("tenant_id", tenantId).in("id", ids).is("archived_at", null);
+      if (liveErr) return json(500, { ok: false, error: liveErr.message });
+      scopedDocIds = (live ?? []).map((r: { id: string }) => r.id);
+    }
+  }
+
+  // 1b2. Temporary conversation scope, resolved SERVER-SIDE from the
+  // conversation id verified-or-created above (tenant-bound either way).
+  // Ready + unexpired temporary documents only; persistent rows (NULL
+  // conversation_id) can never match. Retrieval-time expiry filtering is the
+  // access boundary for temporary data — cleanup is hygiene only.
+  let tempDocIds: string[] = [];
+  if (convId) {
+    const nowIso = new Date().toISOString();
+    const { data: tempRows, error: tempErr } = await db.from("documents")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("conversation_id", convId)
+      .eq("status", "ready")
+      .is("archived_at", null)
+      .gt("expires_at", nowIso);
+    if (tempErr) return json(500, { ok: false, error: tempErr.message });
+    tempDocIds = [...new Set((tempRows ?? []).map((r: { id: string }) => r.id))];
+  }
+  const combined = combineScopes({
+    notebookRequested: notebookId !== null,
+    notebookIds: scopedDocIds,
+    tempIds: tempDocIds,
+  });
+
+  // 1c. Empty notebook scope: deterministic refusal — no retrieval call, no
+  // query embedding, no LLM. Same response shape as the INSUFFICIENT path.
+  // Fires only when a notebook scope was requested AND nothing resolved —
+  // neither persistent sources nor conversation temporaries.
+  if (combined.refused) {
+    const persistErr = await persistAssistant(
+      REFUSAL_TEXT, "insufficient", [],
+      { prompt: null }, { retrieval_ms: 0, total_ms: Math.round(performance.now() - t0) }, null,
+    );
+    console.log(JSON.stringify({
+      fn: "ask", caller, tenant_id: tenantId, path: "refusal",
+      verdict: "INSUFFICIENT", reason: "no-selected-sources", evidence: 0,
+      notebook_id: notebookId,
+    }));
+    return json(200, {
+      ok: true, answer: REFUSAL_TEXT, label: "insufficient",
+      citations: [], evidence_count: 0,
+      gate: { verdict: "INSUFFICIENT", reason: "no-selected-sources", conflicting: [] },
+      grounded: null, conversation_id: convId,
+      persisted: persistErr === null,
+      ...(persistErr ? { persistence_error: persistErr } : {}),
+      scope: { notebook_id: notebookId, document_count: 0 },
+    });
+  }
+
   // 2. Retrieve evidence through the existing mechanism (reused, not copied).
   const tR0 = performance.now();
   let retrieved: EvidenceItem[];
@@ -154,7 +234,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const r = await fetch(`${supabaseUrl}/functions/v1/query-chunks`, {
       method: "POST",
       headers: { apikey: anonKey, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ tenant_id: tenantId, query }),
+      body: JSON.stringify({
+        tenant_id: tenantId, query,
+        ...(combined.ids ? { document_ids: combined.ids } : {}),
+      }),
     });
     if (!r.ok) {
       const t = (await r.text()).slice(0, 200);
@@ -197,6 +280,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       grounded: null, conversation_id: convId,
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
+      ...(notebookId ? { scope: { notebook_id: notebookId, document_count: (combined.ids ?? scopedDocIds ?? []).length } } : {}),
     });
   }
 
@@ -424,5 +508,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     conversation_id: convId,
     persisted: persistErr === null,
     ...(persistErr ? { persistence_error: persistErr } : {}),
+    ...(notebookId ? { scope: { notebook_id: notebookId, document_count: (combined.ids ?? scopedDocIds ?? []).length } } : {}),
   });
 });

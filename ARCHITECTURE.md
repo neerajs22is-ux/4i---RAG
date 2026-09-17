@@ -1,14 +1,381 @@
-# RAG 4i – Supabase + Bedrock Architecture (Analysis Only, 2026-09-14)
+# RAG 4i — Architecture
 
-Status: **architecture analysis only**. No application code, no tables, no Edge Functions,
-no Bedrock integration, and no dependency stack were created as part of this task.
+Status: **V1 LOCKED** (2026-09-16). This document is now the technical source of
+truth for the *current* production system. Part 1 below describes what is actually
+deployed and verified. Part 2 is the original pre-implementation analysis
+(2026-09-14), preserved for history and explicitly **SUPERSEDED**.
 
-Working directory at time of writing (`C:\RAG 4i - Superbase`) contained only `.git/`.
-This document and `DECISIONS.md` are the only files created by this task.
+- Current production checkpoint: git HEAD `e3a9062`; deployed and ACTIVE:
+  `ingest-pdf` v33, `embed-worker` v29, `query-chunks` v29, `ask` v38,
+  `storage-cleanup` v1 (see §1.15).
+- For the fresh-session continuation entry point see `SESSION_HANDOFF.md`.
+- For decision records see `DECISIONS.md`.
+- **This document covers the backend/RAG only.** The frontend lives in `web/`
+  and is documented in `UI_ARCHITECTURE.md`; backend facts below are unchanged
+  by UI work.
 
-Previous system: `C:\RAG-4i-Cloud` — now a **reference/research artifact only**.
-Its continuation point `SESSION_HANDOFF.md` (2026-09-14) was read first.
-Nothing below assumes the old EC2/Chroma/Streamlit/local-model stack carries forward.
+Source-of-truth hierarchy:
+
+1. **The code and migrations** (`supabase/migrations/`, `supabase/functions/`) are
+   authoritative for implementation facts.
+2. `ARCHITECTURE.md` (this file, Part 1) — current technical architecture.
+3. `DECISIONS.md` — decision records (status table for D1–D17, current decisions
+   D18–D45; the original D1–D17 bodies are historical).
+4. `UI_ARCHITECTURE.md` — frontend architecture (implementation status,
+   boundaries, pending work); never overrides Part 1.
+5. `SESSION_HANDOFF.md` — session continuation state.
+6. `eval/README.md` — evaluation harness usage.
+7. Part 2 of this file — historical analysis, superseded.
+
+---
+
+# Part 1 — Current production architecture (V1 LOCKED)
+
+## 1.1 Application and request flow
+
+Browser app (Next.js; see `UI_ARCHITECTURE.md`) → Supabase Edge Functions. The
+browser holds only its Supabase publishable key + the user's Auth JWT. It
+**never** calls a model provider (Voyage or Bedrock/Mantle) directly; all
+provider traffic is server-side.
+
+Edge Functions (Deno), all ACTIVE:
+
+| Function | Role | JWT |
+|---|---|---|
+| `ingest-pdf` | PDF → chunks: `action` = `ingest` / `retry` / `delete-document` | gateway `verify_jwt` on; caller JWT data plane |
+| `embed-worker` | Cron-driven Voyage embedding of pending chunks | `verify_jwt` **off**; gated by `x-worker-key` timing-safe secret |
+| `query-chunks` | Query embedding + hybrid retrieval (optional notebook/document scope) | caller JWT |
+| `ask` | Full answering pipeline (see 1.2) | caller JWT |
+| `storage-cleanup` | Bounded orphan-object cleanup for one tenant (see 1.16) | caller JWT + membership; `apply` requires owner/admin |
+
+All browser-facing functions share `_shared/cors.ts` (D46); `embed-worker` is
+cron-only and does not.
+
+`/ask` request pipeline (one invocation):
+
+```
+POST /functions/v1/ask  { tenant_id, query (≤1000 chars), conversation_id? }
+ → bearer JWT → auth.getUser            (401 fail-closed)
+ → membership lookup                    (403)
+ → conversation: verify or create
+ → clarification gate                   (deterministic; no LLM)
+ → retrieval  (internal call to query-chunks)
+ → evidence gate (verifyEvidence)
+ → INSUFFICIENT? → refusal, no LLM      (label insufficient, 0 cites, grounded null)
+ → generation (Bedrock Mantle chat completions, temp 0.0)
+ → strip <think> blocks
+ → citation guard                       (hard 502 on failure)
+ → groundedness tripwire                (downgrade-only)
+ → answer-correctness checker           (flag-gated, advisory)
+ → deterministic aggregation
+ → persist user+assistant messages
+ → JSON response (+ bounded diagnostics)
+```
+
+## 1.2 Authentication, tenancy, RLS
+
+- Supabase Auth is the sole identity source. Edge Functions validate the caller
+  JWT via `auth.getUser(jwt)` and use a **caller-JWT data plane** — no
+  `service_role` in the query path.
+- Every RAG row carries `tenant_id`. RLS is enabled on every application table.
+  Policies use `to authenticated` + membership helpers
+  `private.is_tenant_member(tenant_id)` / `private.is_tenant_manager(tenant_id)`
+  (`security definer`, `set search_path = ''`, `STABLE`). The tenant predicate is
+  on every retrieval branch.
+- `match_chunks` is `SECURITY INVOKER`, so the caller's RLS applies on top of its
+  explicit tenant predicates (anon sees nothing — no anon policy exists).
+- Browser upload/download uses tenant-namespaced Storage keys
+  `tenants/<tenant_id>/docs/<doc>/<file>` in the private `company-documents`
+  bucket. Membership is a live DB lookup (immediate revocation).
+- `service_role` is confined to the `embed-worker` (platform scheduler role),
+  scoped per claimed job to that job's own tenant/document. No other function
+  uses it.
+
+## 1.3 Retrieval (LOCKED)
+
+Provider: Voyage AI `voyage-4`, **1024-dim float**, `input_type: "document"` for
+corpus and `"query"` for queries. Query embeddings are produced server-side.
+
+`query-chunks` behavior:
+
+- Server-side query embedding (`VOYAGE_MODEL` pinned; model mismatch → 502;
+  vector length and finiteness validated).
+- One RPC round trip: `public.match_chunks(p_tenant_id, p_query_vector,
+  p_query_text, p_dense_n, p_lex_n, p_document_ids)`. The last parameter is the
+  **only** post-lock addition (D50): `NULL` means the previous unscoped
+  behaviour; an array restricts both branches to those documents. Everything
+  else below is unchanged. Dense branch skips NULL embeddings;
+  `hnsw.iterative_scan = 'relaxed_order'` is set per-transaction so selective
+  tenant filters still return full candidate sets.
+- Temporary conversation scope (D60; migration applied, deployed in
+  `query-chunks` v31 / `ask` v39; live-validated 2026-09-17): `ask` and
+  `query-chunks` additionally union the conversation's ready + unexpired
+  temporary documents (resolved server-side from a tenant-validated
+  `conversation_id`) into the allowed set; direct `document_ids` calls reject
+  expired temporary IDs fail-closed. No temporary document can enter the set
+  through `notebook_sources` (database trigger). Empty notebook scope with no
+  temporaries still refuses deterministically; no conversation and no
+  temporaries stays byte-identical unscoped. Unscoped retrieval with temporary
+  rows present resolves the persistent set explicitly, so one conversation's
+  temporaries never surface in another's (cross-conversation isolation proven
+  live).
+- Constants (LOCKED, calibrated on the gold corpus): dense **20**, lexical **20**
+  (`CANDIDATE_CAP = 50`), fusion **RRF** with **`RRF_K = 60`** (a `weighted`
+  min-max blend exists but is not the default), final evidence **`k = 8`**
+  (`FINAL_K_CAP = 20`), deterministic tie-break by `chunk_id`.
+- **No global dense threshold/floor.** Retrieval is recall-first; the evidence
+  gate owns the cut.
+- Provenance per evidence item: `chunk_id`, `document_id`, `tenant_id`,
+  `file_name`, `page`, `content`, `dense_score/dense_rank`, `lex_score/lex_rank`,
+  `fused_rank/fused_score`.
+
+## 1.4 Evidence gate (deterministic, model-free)
+
+`verifyEvidence(question, evidence)` → `{ verdict, reason, supported[],
+unsupported[], conflicting[] }`. Verdicts:
+
+| Verdict | Meaning | Reasons used |
+|---|---|---|
+| `SUPPORTED` | every checkable atom is covered | `all-supported`, `no-checkable-claims` |
+| `PARTIAL` | some atoms missing | `insufficient-evidence` |
+| `INSUFFICIENT` | no evidence, or evidence disjoint from the question | `no-evidence`, `unsupported-claims` |
+| `CONFLICTING` | question-relative contradiction | `conflicting-evidence` |
+
+Mechanism: question atoms (terms/numbers/quoted spans) checked against
+normalized chunk tokens; conflict detection requires genuinely incompatible
+values linked by **exclusive question-anchored phrasal pairs** (a single shared
+phrase is treated as boilerplate); bare numbers require the question to frame the
+choice; negation uses the same anchored-pair rule; amendment/supersession
+language (`prior to its substitution`, `w.e.f.`, etc.) never creates a false
+conflict (version-aware). Disjoint evidence short-circuits to `INSUFFICIENT`
+before any conflict detector.
+
+`promptModeFor` maps verdict → generation mode: `direct | partial | conflict |`
+`refuse`.
+
+## 1.5 Generation (Bedrock Mantle, exclusive)
+
+- Provider: **Bedrock Mantle Chat Completions only** —
+  `https://bedrock-mantle.ap-south-1.api.aws/v1/chat/completions` (fixed
+  server-side constant, never taken from the request).
+- Model: from the `ANSWER_MODEL_ID` secret (production
+  `qwen.qwen3-235b-a22b-2507-v1:0`). Never hardcoded, never silently substituted.
+- `temperature 0.0`, `max_tokens 1024`, single user message = frozen rendered
+  prompt.
+- Prompts are frozen/versioned: `PROMPT_VERSION = "v1"` with modes
+  `v1-direct`, `v1-partial`, `v1-conflict`. The model must cite evidence as
+  `[Sn]`; refusal text is a fixed constant.
+- No `bedrock-runtime` SDK, no Converse/InvokeModel, no EC2, no local model, no
+  provider fallback or substitution anywhere.
+
+## 1.6 Citation guard
+
+Deterministic. Citations are positional `[Sn]` over the exact evidence array.
+`validateCitations` rejects: malformed bare `[S]`, out-of-range `[Sn]`, a
+citation with no backing chunk, cross-tenant reference, and (when scoped)
+out-of-document reference. Failure is a **hard 502** (never silent). Response
+`citations` are the de-duplicated, validated source objects.
+
+## 1.7 Groundedness tripwire
+
+Deterministic post-generation check (`checkGroundedness`): numbers, dates,
+qualifiers/negations, and sentence-level support against the retrieved chunk
+text. Any finding sets `grounded = false` and **downgrades** `direct → partial`
+with a static note; it never rewrites the answer and never regenerates.
+Diagnostics are exposed as `tripwire { reason, findings[], counts }` with reasons
+`grounded | unsupported-claims | numeric-mismatch | missing-qualifier`.
+
+## 1.8 Answer-correctness checker (bounded, flag-gated, advisory)
+
+- Enabled only when the server-side secret `CORRECTNESS_CHECKER_ENABLED === "true"`
+  (default OFF; never exposed to the browser). It is **structurally never invoked
+  for an INSUFFICIENT gate** (that path returns a refusal before it).
+- A bounded single-shot evaluator, not an agent: fixed input
+  (question / answer / evidence / gate verdict / citations), fixed prompt
+  (`correctness-v1`), strict JSON contract
+  `{ checker, verdict, claims[], feedback, invalid_result, invalid_reason }`,
+  verdict `PASS | PARTIAL | FAIL | INVALID`.
+- Uses the same Mantle endpoint/model/key. **No application-level `max_tokens`**
+  (provider applies its own maximum). 30 s timeout; at most **one** retry, and
+  only for transport/5xx/timeout; malformed output → `INVALID` (never repaired);
+  `INVALID` preserves the original result. No tools, no web, no retrieval, no
+  memory, no loops, no regeneration.
+- Output is **advisory only** (see aggregation). Claims/feedback/model text are
+  never logged or returned.
+
+## 1.9 Aggregation
+
+Deterministic and **downgrade-only** (`aggregateCorrectness`):
+
+- `PASS`/`INVALID`/absent → preserve label and note.
+- `PARTIAL`/`FAIL` → if the label is `direct`, downgrade to `partial` and append
+  a static note; otherwise keep the label and append the note.
+- It can never upgrade a verdict, bypass a refusal, override citations, override
+  the evidence gate, or change HTTP status.
+
+## 1.10 Persistence
+
+`conversations` + `messages` (RLS-scoped, caller data plane). Each `/ask`
+persists a user row and an assistant row in one multi-row insert (uniform keys).
+The assistant row stores `label`, `sources` (provenance JSONB), `model_ids`
+(`answer_model`, `prompt`, `embedding`), and `timings` (retrieval/generation/
+stage timings, tokens, grounded, and — when the checker runs —
+`correctness_verdict`/`correctness_ms`). A persistence failure returns the answer
+with `persisted: false` and a bounded error, never silently.
+
+## 1.11 Ingestion
+
+`ingest-pdf`: caller-JWT, membership-checked, tenant-path-validated
+(`tenants/<tid>/…/*.pdf`). Pipeline: Storage download → `unpdf@1.8.1`
+page-preserving extract → **1000-char chunks / 200-char overlap** →
+`chunk_id = sha256("none-v1|<tenant_id>|<storage_path>|<page>|<content>")` →
+batched `upsert(onConflict: chunk_id, ignoreDuplicates)` → delete stale chunk IDs
+→ document left `pending`. Idempotent: same content → same IDs; a registration
+race re-reads the winner; `retry` re-runs the pipeline; empty/scanned PDFs fail
+loudly (no OCR).
+
+Temporary chat files (D60; migration applied, deployed in `ingest-pdf` v35 /
+`query-chunks` v31 / `ask` v39 / `storage-cleanup` v2; live-validated
+2026-09-17): a temporary document is an ordinary `documents` row with `conversation_id` set (composite FK pins the same
+tenant) and `expires_at` set (initial TTL 24 h); persistent ⟺ both NULL.
+`ingest-temp` validates the conversation server-side and otherwise runs the
+identical pipeline (all D47 limits apply, same worker, same chunk model);
+`promote` clears both columns in place. Temporary scope columns are immutable
+after registration except for the promotion-shaped clear (database trigger,
+all roles).
+
+`embed-worker`: pg_cron (every minute) → pg_net → worker with `x-worker-key`.
+Per tick it claims one idle `processing` job via a compare-and-swap on
+`attempts` and embeds in **bounded batches** (D48/D58): up to
+`CHUNKS_PER_REQUEST = 12` chunks per Voyage request, at most
+`REQUESTS_PER_TICK = 3` requests sent sequentially ~20 s apart, with a
+12,000-character cap per request and a 9,500 per-tick token guard (≈80% of the
+confirmed free account's 10K TPM at peak; ≤3 requests in any rolling minute).
+A registration that just persisted chunks also triggers the worker directly
+with the job id (same claim, same pass); the cron sweep remains the backstop.
+A whole batch is validated (model exact, count exact, complete index mapping,
+1024 finite dimensions) **before** any write — an invalid batch persists
+nothing. Updates are non-NULL-only (`is("embedding", null)`). Document becomes
+`ready` **only** when zero NULL embeddings remain; 429 stops the tick and
+resumes next tick; fatal provider errors fail the job+document loudly.
+
+Measured first-upload cadence (2026-09-17 audit + optimization, v34/v30):
+registration answers in ~8–12 s for 9–60 chunks; the triggered worker claims
+within seconds and embeds up to 36 chunks immediately, with further ticks on
+the per-minute cron. Live upload→ready: 20 s (148 KB / 9 chunks), 195 s
+(2.0 MB / 60 chunks); ~7 min projected for 226 chunks. Parsing is sub-second
+locally for these sizes; the per-minute cadence plus the 36-chunks/min budget
+is the remaining pacing, by design under the confirmed free Voyage tier
+(3 RPM / 10K TPM — see D58).
+
+## 1.12 Observability (bounded)
+
+`/ask` responses (and the eval runner artifacts) carry bounded diagnostics:
+`gate { verdict, reason, conflicting[] }`, `citation_guard { ok, reason }`,
+`tripwire { reason, findings[], counts }`,
+`correctness { invoked, verdict, invalid_reason, latency_ms, attempts,
+output_chars, output_tokens }`, `timings { retrieval_ms, generation_ms,
+citation_guard_ms, tripwire_ms, aggregation_ms, correctness_ms, persistence_ms,
+total_ms }`, and `model { provider, model, prompt_version, temperature,
+max_tokens, correctness_enabled }`. Logs are metadata-only — never keys, tokens,
+vectors, or answer/evidence content.
+
+## 1.13 Security boundaries
+
+- No provider credential is ever browser-visible; no key in the repo or logs.
+- Secret names (values never in repo/logs): `VOYAGE_API_KEY`, `MANTLE_API_KEY`,
+  `ANSWER_MODEL_ID`, `WORKER_CRON_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+  `SUPABASE_SECRET_KEYS`/`SUPABASE_SERVICE_ROLE_KEY`, plus Vault secrets
+  `embed_worker_url`/`embed_worker_key`.
+- Tenant isolation is a DB predicate + RLS, not frontend discipline. Cross-tenant
+  reads fail closed.
+- Browser ↔ provider is forbidden by construction.
+
+## 1.14 Failure behavior
+
+Bounded and fail-closed: 400 (bad input), 401 (auth), 403 (membership),
+404 (conversation/document), 429 (Mantle throttled), 500 (config/internal),
+502 (provider/retrieval/citation failure). No open-ended loops, no autonomous
+retries, no silent fallback, no model substitution, no answer generation on
+INSUFFICIENT evidence. The only retries are: one checker transport retry, and the
+Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
+
+## 1.15 Deployment state
+
+- Supabase project ref `uqlpfgtkmsaexmtieulp`, region `ap-southeast-2`.
+- AWS Bedrock Mantle region `ap-south-1`; Voyage server-side.
+- Deployed and ACTIVE: `ingest-pdf` **v35**, `embed-worker` **v30** (+ per-minute
+  Cron), `query-chunks` **v31**, `ask` **v39**, `storage-cleanup` **v2**.
+- `CORRECTNESS_CHECKER_ENABLED` OFF. No other feature flag enabled.
+- Bucket `company-documents` is private with `file_size_limit = 25 MiB`; the
+  corpus grows through normal use.**Production snapshot (2026-09-17):** 2
+  documents — `incometax.pdf` (78 pages, 433,795 B, `ready`) and
+  `Thrine Sales SOP (1).pdf` (7 pages, 160,516 B, `ready`, uploaded through the
+  UI after the Pass C fix) — **239 chunks**; 1 notebook (`test`) with one
+  selected source; both ingest jobs `succeeded`. Six Storage objects have no
+  document row (the long-standing `phase3c2` orphan, four pre-fix uploads run by
+  a user, and one object left by a diagnostic in a since-deleted test tenant) —
+  see `eval/runs/pre-pass-e-state-sync.md`.
+- Source HEAD is `e3a9062`; the B-series work (D46–D52) is applied/deployed but
+  **not yet committed**.
+- **Versions and state in this section are a dated snapshot, not a guarantee.**
+  Re-verify with a harmless authenticated read (e.g. `supabase functions list`,
+  `supabase projects list`) before any deployment, migration or mutation —
+  never act on this section alone (D59).
+
+## 1.16 Post-lock additive capabilities (B1–B6)
+
+These extend the locked V1 chain without changing it; each is a durable decision
+in `DECISIONS.md` Part 4 and a validated report under `eval/runs/`.
+
+- **Upload safety (D47, migration `20260917000000`)** — `documents.file_size`
+  (backfilled from Storage metadata) plus server-enforced limits in
+  `ingest-pdf`: 25 MB per file, 400 MB per workspace, 60 active documents,
+  20,000 chunks, at most 1 processing + 3 pending jobs, duplicate rejection by
+  extracted-content hash. Rejections are 413/507/409 and write nothing.
+- **Batched embedding (D48)** — see §1.11.
+- **Notebook model (D49, migration `20260917000002`)** — `notebooks`,
+  `notebook_sources` (`selected`, composite tenant-pinned FKs),
+  `documents.archived_at`; member-scoped RLS mirroring `documents`.
+- **Notebook-scoped retrieval (D50, migration `20260917000003`)** — the only
+  retrieval change: an allowed-document filter. `/ask` resolves a notebook's
+  selected, non-archived, same-tenant documents server-side and passes them to
+  `/query-chunks`; an empty scope refuses deterministically with no retrieval
+  call and no LLM. Unscoped calls are bit-identical to pre-B2 behaviour.
+- **Storage cap (D51, migration `20260917000001`)** — bucket `file_size_limit`
+  lowered to 25 MiB, matching the application policy.
+- **Orphan cleanup (D52, `storage-cleanup` v1)** — enumerate one tenant's prefix,
+  classify (valid / too_young / active / orphan / unsafe), delete only confirmed
+  orphans older than 24 h that are unreferenced, bounded and idempotent;
+  dry-run for members, apply for owner/admin; no service_role.
+- **Temporary chat files (D60, migration `20260917000004` applied; deployed
+  in `ingest-pdf` v35 / `query-chunks` v31 / `ask` v39 / `storage-cleanup`
+  v2; live-validated 2026-09-17)** — conversation-scoped temporary rows in
+  `documents` reusing jobs/chunks/worker/retrieval/`delete-document`;
+  retrieval-time expiry is the access boundary, cleanup is hygiene-only
+  (`expired_temp_documents` section in `storage-cleanup`, bounded, via the
+  `delete-document` primitive); no separate subsystem. Unscoped retrieval
+  excludes temporary rows whenever any exist (else legacy NULL path).
+- **Pre-UI regression** — full 34-case frozen harness: retrieval bit-identical to
+  the frozen baseline, gate/label reproduce the latest chain measurement,
+  `unscoped == full-corpus scope` on 34/34, PASS
+  (`eval/runs/pre-ui-regression-34-20260917.md`).
+
+---
+
+# Part 2 — Historical record (SUPERSEDED)
+
+> **Everything below this line is the original pre-implementation analysis dated
+> 2026-09-14, kept for history only.** It is NOT the current architecture.
+> Superseded references include: Bedrock **Converse/InvokeModel/Titan V2**
+> (production generation is now **Mantle Chat Completions**), AWS **SigV4/IAM
+> answer keys** (now a Mantle Bearer secret), **Bedrock Rerank V1.5**
+> (not shipped), the streaming/SSE and one-corrective-retrieval flow (not
+> implemented), placeholder calibration/"small k"/threshold language (now the
+> locked 20/20 + RRF-60 + k=8), "no tables/Edge Functions created" (all exist),
+> and the reference-repository list (RAGFlow, OpenViking, ruflo, etc. are
+> **rejected and must never be revisited** as implementation references).
+> See Part 1 for the current system.
 
 ## Amendment — Phase 2C: Voyage 4 embedding contract (2026-09-14)
 

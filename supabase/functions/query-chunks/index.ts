@@ -13,6 +13,8 @@
 // Nothing here inherits old MiniLM-era retrieval values.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { unionDocIds } from "../_shared/temp-scope.ts";
 
 const VOYAGE_MODEL = "voyage-4";
 const VOYAGE_DIMENSIONS = 1024;
@@ -151,7 +153,12 @@ function blendFuse(rows: Candidate[], w: number): Map<string, { row: NormRow; fu
 Deno.serve(async (req: Request): Promise<Response> => {
   const t0 = performance.now();
   const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...corsHeaders(req) },
+    });
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -186,6 +193,136 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const { data: mem } = await db.from("memberships")
     .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
   if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+
+  // B2 — resolve the allowed document set SERVER-SIDE. The caller may name a
+  // notebook (resolved here) or an explicit document list (validated here);
+  // omitting both keeps the previous unscoped behaviour.
+  //
+  // Temporary chat files resolve through the conversation: ready + unexpired
+  // documents bound to it, same tenant. Retrieval-time expiry filtering is the
+  // access boundary for temporary data — cleanup is hygiene only.
+  const notebookId = body.notebook_id != null ? String(body.notebook_id) : null;
+  if (notebookId !== null && !UUID_RE.test(notebookId)) {
+    return json(400, { ok: false, error: "invalid notebook_id" });
+  }
+  const conversationId = body.conversation_id != null ? String(body.conversation_id) : null;
+  if (conversationId !== null && !UUID_RE.test(conversationId)) {
+    return json(400, { ok: false, error: "invalid conversation_id" });
+  }
+  let requestedDocIds: string[] | null = null;
+  if (body.document_ids != null) {
+    const raw = body.document_ids;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 200 ||
+        !raw.every((x) => typeof x === "string" && UUID_RE.test(x))) {
+      return json(400, { ok: false, error: "invalid document_ids" });
+    }
+    requestedDocIds = raw as string[];
+  }
+  if (notebookId && requestedDocIds) {
+    return json(400, { ok: false, error: "provide notebook_id or document_ids, not both" });
+  }
+  if (conversationId) {
+    const { data: conv } = await db.from("conversations")
+      .select("id").eq("id", conversationId).eq("tenant_id", tenantId).limit(1);
+    if (!conv || conv.length === 0) return json(404, { ok: false, error: "conversation not found" });
+  }
+
+  let allowedDocIds: string[] | null = null; // null = unscoped (legacy behaviour)
+  let scopeEmpty = false;
+  if (notebookId) {
+    const { data: nb } = await db.from("notebooks")
+      .select("id").eq("id", notebookId).eq("tenant_id", tenantId).limit(1);
+    if (!nb || nb.length === 0) return json(404, { ok: false, error: "notebook not found" });
+    const { data: srcRows, error: srcErr } = await db.from("notebook_sources")
+      .select("document_id")
+      .eq("notebook_id", notebookId).eq("tenant_id", tenantId).eq("selected", true);
+    if (srcErr) return json(500, { ok: false, error: srcErr.message });
+    const candidates = [...new Set((srcRows ?? []).map((r: { document_id: string }) => r.document_id))];
+    if (candidates.length > 0) {
+      const { data: live, error: liveErr } = await db.from("documents")
+        .select("id").eq("tenant_id", tenantId).in("id", candidates).is("archived_at", null);
+      if (liveErr) return json(500, { ok: false, error: liveErr.message });
+      allowedDocIds = (live ?? []).map((r: { id: string }) => r.id);
+    }
+    scopeEmpty = !allowedDocIds || allowedDocIds.length === 0;
+  } else if (requestedDocIds) {
+    // Direct document lists are validated, never trusted: same tenant,
+    // non-archived, and — closing the expired-temporary replay path — not
+    // expired. An expired temporary document fails closed here even if its
+    // row and object still exist and cleanup has not run. Expiry is filtered
+    // in code (not in the query) so the check cannot silently mis-parse.
+    const nowIso = new Date().toISOString();
+    const { data: owned, error: ownErr } = await db.from("documents")
+      .select("id, expires_at").eq("tenant_id", tenantId).in("id", requestedDocIds).is("archived_at", null);
+    if (ownErr) return json(500, { ok: false, error: ownErr.message });
+    const ownedIds = new Set(
+      ((owned ?? []) as Array<{ id: string; expires_at: string | null }>)
+        .filter((r) => r.expires_at === null || r.expires_at > nowIso)
+        .map((r) => r.id),
+    );
+    if (requestedDocIds.some((id) => !ownedIds.has(id))) {
+      return json(400, { ok: false, error: "document_ids must belong to this tenant, not be archived, and not be expired" });
+    }
+    allowedDocIds = requestedDocIds;
+  }
+
+  // Temporary conversation scope, resolved server-side from the validated
+  // conversation id. Ready + unexpired only; persistent rows (NULL
+  // conversation_id) can never match. Unions with any persistent scope above;
+  // with no other scope it becomes the allowed set (cases B/E); with neither
+  // it stays null and behaviour below is byte-identical to unscoped (case D).
+  let tempDocIds: string[] = [];
+  if (conversationId) {
+    const nowIso = new Date().toISOString();
+    const { data: tempRows, error: tempErr } = await db.from("documents")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("conversation_id", conversationId)
+      .eq("status", "ready")
+      .is("archived_at", null)
+      .gt("expires_at", nowIso);
+    if (tempErr) return json(500, { ok: false, error: tempErr.message });
+    tempDocIds = [...new Set((tempRows ?? []).map((r: { id: string }) => r.id))];
+  }
+  if (allowedDocIds !== null) {
+    allowedDocIds = unionDocIds(allowedDocIds, tempDocIds);
+  } else if (tempDocIds.length > 0) {
+    allowedDocIds = tempDocIds;
+  }
+
+  if (allowedDocIds === null) {
+    // Unscoped retrieval must never surface another conversation's temporary
+    // chunks (cross-conversation isolation): when temporary rows exist for
+    // this tenant, resolve the persistent set explicitly instead of the
+    // legacy NULL path. With no temporary rows the NULL path — and its exact
+    // behaviour — is preserved. The explicit list covers every persistent
+    // document (any status, including archived: the legacy path never filtered
+    // those), so results are identical except for the excluded temporaries.
+    const { data: tempProbe, error: tempProbeErr } = await db.from("documents")
+      .select("id").eq("tenant_id", tenantId).not("expires_at", "is", null).limit(1);
+    if (tempProbeErr) return json(500, { ok: false, error: tempProbeErr.message });
+    if (tempProbe && tempProbe.length > 0) {
+      const { data: persistent, error: persistentErr } = await db.from("documents")
+        .select("id").eq("tenant_id", tenantId).is("expires_at", null);
+      if (persistentErr) return json(500, { ok: false, error: persistentErr.message });
+      allowedDocIds = ((persistent ?? []) as Array<{ id: string }>).map((r) => r.id);
+    }
+  }
+
+  // Empty scope: deterministic empty result, no provider call, no query embed.
+  if (scopeEmpty && tempDocIds.length === 0) {
+    const totalMs = Math.round(performance.now() - t0);
+    console.log(JSON.stringify({
+      fn: "query-chunks", caller, tenant_id: tenantId, scope: "notebook",
+      notebook_id: notebookId, allowed_documents: 0, evidence: 0, total_ms: totalMs,
+    }));
+    return json(200, {
+      ok: true, model: VOYAGE_MODEL, fusion: String(body.fusion ?? FUSION_DEFAULT).toLowerCase(),
+      query_tokens: 0, candidates: { dense: 0, lexical: 0 }, evidence: [],
+      scope: { notebook_id: notebookId, document_count: 0, reason: "no_selected_sources" },
+      timings: { embed_ms: 0, retrieval_ms: 0, total_ms: totalMs },
+    });
+  }
 
   const apiKey = Deno.env.get("VOYAGE_API_KEY") ?? "";
   if (!apiKey) return json(500, { ok: false, error: "VOYAGE_API_KEY not configured" });
@@ -231,6 +368,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     p_query_text: query,
     p_dense_n: denseN,
     p_lex_n: lexN,
+    p_document_ids: allowedDocIds,
   });
   if (rpcErr) return json(500, { ok: false, error: rpcErr.message });
   const retrievalMs = Math.round(performance.now() - tR0);
@@ -262,6 +400,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const totalMs = Math.round(performance.now() - t0);
   console.log(JSON.stringify({
     fn: "query-chunks", caller, tenant_id: tenantId, fusion,
+    scope: notebookId ? "notebook" : allowedDocIds ? "documents" : "unscoped",
+    allowed_documents: allowedDocIds ? allowedDocIds.length : null,
     dense_candidates: denseCount, lex_candidates: lexCount,
     evidence: evidence.length, query_tokens: queryTokens, total_ms: totalMs,
   }));
@@ -272,6 +412,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     query_tokens: queryTokens,
     candidates: { dense: denseCount, lexical: lexCount },
     evidence,
+    scope: notebookId
+      ? { notebook_id: notebookId, document_count: allowedDocIds?.length ?? 0 }
+      : { notebook_id: null, document_count: allowedDocIds ? allowedDocIds.length : null },
     timings: { embed_ms: embedMs, retrieval_ms: retrievalMs, total_ms: totalMs },
   });
 });

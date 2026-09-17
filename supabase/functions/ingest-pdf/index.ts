@@ -25,12 +25,24 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { extractText } from "npm:unpdf@1.8.1";
+import { tempExpiresAt } from "../_shared/temp-scope.ts";
+import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
 
 const BUCKET = "company-documents";
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const PIPELINE_TAG = "none-v1";
 const INSERT_BATCH = 100;
+
+// --- B3 upload-safety limits (approved in the UI Pass 4 audit §15) ----------
+// Enforced server-side on every ingest call. `file_size` (Storage metadata) is
+// the authoritative storage-budget input; nothing here trusts a caller value.
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 26,214,400 — plan ceiling is 50 MB
+const MAX_TENANT_STORAGE_BYTES = 400 * 1024 * 1024; // 40% of the 1 GB quota
+const MAX_TENANT_DOCUMENTS = 60; // active documents (pending | ready)
+const MAX_TENANT_CHUNKS = 20000; // ≈220 MB of the 500 MB database budget
+const MAX_PROCESSING_JOBS = 1; // the worker claims one job at a time
+const MAX_PENDING_JOBS = 3;
 
 // RecursiveCharacterTextSplitter-equivalent (chars). Same behavior proven in
 // the Phase 2 POCs; do not retune here.
@@ -71,14 +83,77 @@ type Db = any;
 type Job = { id: string; attempts: number };
 type Doc = {
   id: string; tenant_id: string; storage_path: string; file_name: string;
-  status: string; content_hash: string | null;
+  status: string; content_hash: string | null; file_size: number | null;
 };
+
+// Rejections that need a specific HTTP status (mapped in the handler).
+type FailureCode = "duplicate" | "chunk_budget";
+
+/** Authoritative object size from Storage metadata — never a caller value. */
+async function objectSize(db: Db, path: string): Promise<number | null> {
+  const slash = path.lastIndexOf("/");
+  if (slash <= 0) return null;
+  const dir = path.slice(0, slash);
+  const name = path.slice(slash + 1);
+  const { data, error } = await db.storage.from(BUCKET).list(dir, {
+    search: name,
+    limit: 100,
+  });
+  if (error) return null;
+  const hit = (data ?? []).find((o: { name?: string }) => o.name === name) as
+    | { metadata?: { size?: unknown } }
+    | undefined;
+  const size = hit?.metadata?.size;
+  return typeof size === "number" && Number.isFinite(size) && size >= 0 ? size : null;
+}
 
 async function failJob(db: Db, jobId: string, docId: string, message: string) {
   const err = message.slice(0, 500);
   await db.from("ingest_jobs").update({ status: "failed", last_error: err }).eq("id", jobId);
   await db.from("documents").update({ status: "failed" }).eq("id", docId);
   return err;
+}
+
+/**
+ * Fire-and-forget post-parse trigger for the embedding worker.
+ *
+ * Called only after `processDocument` has durably persisted chunks and
+ * finalized the document row — that durable state IS the parse-complete
+ * signal, so the worker can safely claim the named job immediately instead of
+ * waiting for the next cron tick. Uses the existing server-to-server gate
+ * (WORKER_CRON_KEY, project-scoped Edge secret, never browser-visible).
+ *
+ * Never throws, never delays the ingest response, never changes its outcome:
+ * if the trigger is unavailable for any reason, the per-minute cron sweep
+ * picks the job up exactly as before.
+ */
+function triggerEmbedWorker(jobId: string): void {
+  const run = async (): Promise<void> => {
+    try {
+      const base = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
+      const key = Deno.env.get("WORKER_CRON_KEY") ?? "";
+      if (!base || !key) return;
+      await fetch(`${base}/functions/v1/embed-worker`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-worker-key": key },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+    } catch {
+      // Ignored by contract: the cron sweep is the backstop.
+    }
+  };
+  try {
+    const runtime = (globalThis as {
+      EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void };
+    }).EdgeRuntime;
+    if (runtime?.waitUntil) {
+      runtime.waitUntil(run());
+    } else {
+      void run();
+    }
+  } catch {
+    // Ignored by contract: the cron sweep is the backstop.
+  }
 }
 
 // Shared process pipeline. All failures are recorded on the job + document;
@@ -121,6 +196,30 @@ async function processDocument(db: Db, job: Job, doc: Doc) {
   // 3. Chunk per page with provenance. IDs bind pipeline tag + tenant + path
   // + page + content, so re-runs and retries address identical rows.
   const contentHash = await sha256Hex(fullText.replace(/\s+/g, " ").trim());
+
+  // 3b. Duplicate policy (deterministic). Identity is the extracted-content
+  // hash, not the path or file name, so the same source uploaded twice under
+  // different names cannot become two RAG documents. Only ACTIVE duplicates
+  // block; a failed duplicate row never prevents a retry.
+  const { data: dup, error: dupErr } = await db.from("documents")
+    .select("id, file_name, status")
+    .eq("tenant_id", doc.tenant_id)
+    .eq("content_hash", contentHash)
+    .neq("id", doc.id)
+    .in("status", ["pending", "ready"])
+    .limit(1);
+  if (dupErr) {
+    const err = await fail(`duplicate check failed for ${doc.storage_path}: ${dupErr.message}`);
+    return { ok: false as const, error: err };
+  }
+  if (dup && dup.length > 0) {
+    const other = dup[0] as { file_name: string };
+    const err = await fail(
+      `duplicate of ${other.file_name}: identical content is already indexed in this workspace`,
+    );
+    return { ok: false as const, error: err, code: "duplicate" as FailureCode };
+  }
+
   const rows: Array<Record<string, unknown>> = [];
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
@@ -155,6 +254,25 @@ async function processDocument(db: Db, job: Job, doc: Doc) {
       ok: true as const, idempotent: true, document_id: doc.id, job_id: job.id,
       chunks: count ?? 0, inserted: 0, removed_stale: 0,
     };
+  }
+
+  // 4b. Workspace chunk budget — authoritative count checked immediately
+  // before persistence. This document's own chunks are excluded (a re-ingest
+  // replaces them rather than adding to them).
+  const { count: otherChunks, error: cbErr } = await db.from("chunks")
+    .select("chunk_id", { count: "exact", head: true })
+    .eq("tenant_id", doc.tenant_id)
+    .neq("document_id", doc.id);
+  if (cbErr) {
+    const err = await fail(`chunk budget check failed for ${doc.storage_path}: ${cbErr.message}`);
+    return { ok: false as const, error: err };
+  }
+  const tenantChunks = otherChunks ?? 0;
+  if (tenantChunks + rows.length > MAX_TENANT_CHUNKS) {
+    const err = await fail(
+      `workspace chunk budget exceeded: ${tenantChunks} existing + ${rows.length} new > ${MAX_TENANT_CHUNKS}`,
+    );
+    return { ok: false as const, error: err, code: "chunk_budget" as FailureCode };
   }
 
   // 5. Insert (conflict-safe) then delete stale IDs outside the new set, so
@@ -218,7 +336,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 Deno.serve(async (req: Request): Promise<Response> => {
   const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...corsHeaders(req) },
+    });
+  const preflight = corsPreflight(req);
+  if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -255,7 +378,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     console.log(JSON.stringify({ fn: "ingest-pdf", action, caller, ...extra }));
 
   try {
-    if (action === "ingest") {
+    if (action === "ingest" || action === "ingest-temp") {
+      // Temporary chat files (`ingest-temp`) share the entire persistent
+      // pipeline below — limits, parsing, chunking, jobs, worker. The only
+      // differences: the conversation must exist in this tenant (validated
+      // server-side here), and the created row carries the conversation
+      // binding plus a 24 h expiry instead of NULL/NULL.
+      const temporary = action === "ingest-temp";
       const tenantId = String(body.tenant_id ?? "");
       const storagePath = String(body.storage_path ?? "");
       const fileName = String(body.file_name ?? "document.pdf").slice(0, 200);
@@ -265,15 +394,97 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       if (!(await requireMember(tenantId))) return json(403, { ok: false, error: "not a member of this tenant" });
 
+      let tempConversationId: string | null = null;
+      let tempExpiresAtIso: string | null = null;
+      if (temporary) {
+        tempConversationId = String(body.conversation_id ?? "");
+        if (!UUID_RE.test(tempConversationId)) {
+          return json(400, { ok: false, error: "invalid conversation_id" });
+        }
+        const { data: conv, error: convErr } = await db.from("conversations")
+          .select("id").eq("id", tempConversationId).eq("tenant_id", tenantId).limit(1);
+        if (convErr) return json(500, { ok: false, error: convErr.message });
+        if (!conv || conv.length === 0) {
+          return json(404, { ok: false, error: "conversation not found" });
+        }
+        tempExpiresAtIso = tempExpiresAt(Date.now());
+      }
+
+      // B3 — ingestion concurrency: at most 1 active + 3 pending jobs.
+      const { count: processingJobs } = await db.from("ingest_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId).eq("status", "processing");
+      const { count: pendingJobs } = await db.from("ingest_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId).eq("status", "pending");
+      if ((processingJobs ?? 0) >= MAX_PROCESSING_JOBS || (pendingJobs ?? 0) >= MAX_PENDING_JOBS) {
+        return json(409, {
+          ok: false,
+          error: `workspace is already ingesting (${processingJobs ?? 0} active, ${pendingJobs ?? 0} pending); wait for it to finish`,
+        });
+      }
+
+      // B3 — authoritative file size from Storage metadata (never the caller's).
+      const size = await objectSize(db, storagePath);
+      if (size === null) {
+        return json(400, { ok: false, error: "could not determine the uploaded file size" });
+      }
+      if (size > MAX_FILE_BYTES) {
+        return json(413, {
+          ok: false,
+          error: `file is ${(size / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB`,
+        });
+      }
+
       let doc: Doc | null = null;
       {
         const { data, error } = await db.from("documents")
-          .select("id, tenant_id, storage_path, file_name, status, content_hash")
+          .select("id, tenant_id, storage_path, file_name, status, content_hash, file_size, expires_at")
           .eq("tenant_id", tenantId)
           .eq("storage_path", storagePath)
           .limit(1);
         if (error) return json(500, { ok: false, error: error.message });
         doc = (data?.[0] as Doc) ?? null;
+      }
+      if (temporary && doc && (doc as Doc & { expires_at: string | null }).expires_at === null) {
+        // Temporary and persistent rows never mix: an already-persistent path
+        // keeps its scope; re-upload under a fresh path for a temporary copy.
+        return json(400, { ok: false, error: "storage path is already registered as a persistent document" });
+      }
+
+      // B3 — document count (new documents only) and storage budget.
+      if (!doc) {
+        const { count: activeDocs } = await db.from("documents")
+          .select("id", { count: "exact", head: true })
+          .eq("tenant_id", tenantId)
+          .in("status", ["pending", "ready"]);
+        if ((activeDocs ?? 0) >= MAX_TENANT_DOCUMENTS) {
+          return json(409, {
+            ok: false,
+            error: `workspace document limit reached (${MAX_TENANT_DOCUMENTS})`,
+          });
+        }
+      }
+      {
+        const { data: sizeRows, error: sizeErr } = await db.from("documents")
+          .select("file_size")
+          .eq("tenant_id", tenantId);
+        if (sizeErr) return json(500, { ok: false, error: sizeErr.message });
+        const usedBytes = (sizeRows ?? []).reduce(
+          (sum: number, row: { file_size?: number | null }) => sum + (row.file_size ?? 0),
+          0,
+        );
+        const projected = usedBytes - (doc?.file_size ?? 0) + size;
+        if (projected > MAX_TENANT_STORAGE_BYTES) {
+          return json(507, {
+            ok: false,
+            error: `workspace storage budget exceeded: ${(projected / (1024 * 1024)).toFixed(0)} MB of ${MAX_TENANT_STORAGE_BYTES / (1024 * 1024)} MB`,
+          });
+        }
+      }
+      if (doc && doc.file_size !== size) {
+        // Re-ingest of the same object: keep the authoritative size current.
+        await db.from("documents").update({ file_size: size }).eq("id", doc.id);
       }
       if (!doc) {
         const { data, error } = await db.from("documents").insert({
@@ -281,12 +492,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
           file_name: fileName,
           storage_path: storagePath,
           status: "pending",
+          file_size: size,
           created_by: caller,
-        }).select("id, tenant_id, storage_path, file_name, status, content_hash").single();
+          conversation_id: tempConversationId,
+          expires_at: tempExpiresAtIso,
+        }).select("id, tenant_id, storage_path, file_name, status, content_hash, file_size").single();
         if (error && (error as { code?: string }).code === "23505") {
           // Lost a registration race: re-read the winner's row and continue.
           const { data: raced, error: reErr } = await db.from("documents")
-            .select("id, tenant_id, storage_path, file_name, status, content_hash")
+            .select("id, tenant_id, storage_path, file_name, status, content_hash, file_size")
             .eq("tenant_id", tenantId)
             .eq("storage_path", storagePath)
             .limit(1);
@@ -307,6 +521,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
       const result = await processDocument(db, job as Job, doc as Doc);
       log({ tenant_id: tenantId, document_id: (doc as Doc).id, job_id: (job as Job).id, ok: result.ok });
+      if (!result.ok && "code" in result) return json(409, result);
+      if (result.ok && !result.idempotent) {
+        // Parse-complete state is durable: start embedding without waiting
+        // for the next cron tick. Fire-and-forget — never affects this
+        // response, and the cron sweep recovers if the trigger is lost.
+        // (Already-ready no-ops need no trigger: nothing is left to embed.)
+        triggerEmbedWorker((job as Job).id);
+      }
       return json(result.ok ? 200 : 500, result);
     }
 
@@ -317,7 +539,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         .select("id, tenant_id, document_id, attempts").eq("id", jobId).single();
       if (jobErr || !job) return json(404, { ok: false, error: "job not found" });
       const { data: doc, error: docErr } = await db.from("documents")
-        .select("id, tenant_id, storage_path, file_name, status, content_hash")
+        .select("id, tenant_id, storage_path, file_name, status, content_hash, file_size")
         .eq("id", (job as { document_id: string }).document_id).single();
       if (docErr || !doc) return json(404, { ok: false, error: "document not found" });
       if (!(await requireMember((doc as Doc).tenant_id))) {
@@ -325,7 +547,41 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       const result = await processDocument(db, job as Job, doc as Doc);
       log({ job_id: jobId, ok: result.ok });
+      if (!result.ok && "code" in result) return json(409, result);
+      if (result.ok && !result.idempotent) {
+        // Same post-parse trigger as the ingest path: the retry just
+        // re-persisted parse-complete state, so embedding can start now.
+        triggerEmbedWorker(jobId);
+      }
       return json(result.ok ? 200 : 500, result);
+    }
+
+    if (action === "promote") {
+      // Temporary → persistent promotion. Server-side only: the caller names
+      // a document, never the scope values. Membership of the document's
+      // tenant is re-checked, and only a row that is actually temporary can
+      // be promoted. Clearing both columns makes it an ordinary persistent
+      // document in place — storage, chunks and embeddings are preserved, no
+      // second copy is created. (Attaching it to a Space afterwards uses the
+      // existing source-attach flow.)
+      const documentId = String(body.document_id ?? "");
+      if (!UUID_RE.test(documentId)) return json(400, { ok: false, error: "invalid document_id" });
+      const { data: doc, error: docErr } = await db.from("documents")
+        .select("id, tenant_id, expires_at, conversation_id").eq("id", documentId).single();
+      if (docErr || !doc) return json(404, { ok: false, error: "document not found" });
+      const d = doc as { id: string; tenant_id: string; expires_at: string | null };
+      if (!(await requireMember(d.tenant_id))) {
+        return json(403, { ok: false, error: "not a member of this tenant" });
+      }
+      if (d.expires_at === null) {
+        return json(400, { ok: false, error: "not a temporary document" });
+      }
+      const { error: promoteErr } = await db.from("documents")
+        .update({ expires_at: null, conversation_id: null })
+        .eq("id", d.id);
+      if (promoteErr) return json(500, { ok: false, error: promoteErr.message });
+      log({ action: "promote", document_id: d.id, ok: true });
+      return json(200, { ok: true, document_id: d.id });
     }
 
     if (action === "delete-document") {
@@ -353,7 +609,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       });
     }
 
-    return json(400, { ok: false, error: "unknown action (ingest|retry|delete-document)" });
+    return json(400, { ok: false, error: "unknown action (ingest|ingest-temp|retry|promote|delete-document)" });
   } catch (e) {
     return json(500, { ok: false, error: e instanceof Error ? e.message.slice(0, 300) : "internal error" });
   }
