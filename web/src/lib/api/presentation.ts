@@ -28,6 +28,7 @@ export type EvidenceState =
 export type AnswerOutcome =
   | { kind: "answered"; state: EvidenceState }
   | { kind: "clarification" }
+  | { kind: "conversational" }
   | { kind: "refused" };
 
 const STATE_FOR_GATE: Record<GateVerdict, EvidenceState> = {
@@ -43,10 +44,12 @@ const STATE_FOR_LABEL: Record<AnswerLabel, EvidenceState | null> = {
   conflict: "conflicting",
   insufficient: "insufficient",
   clarification: null,
+  conversational: null,
 };
 
 export function outcomeFor(response: AskResponse): AnswerOutcome {
   if (response.label === "clarification") return { kind: "clarification" };
+  if (response.label === "conversational") return { kind: "conversational" };
   if (response.label === "insufficient") return { kind: "refused" };
   const fromGate = response.gate ? STATE_FOR_GATE[response.gate.verdict] : null;
   return { kind: "answered", state: fromGate ?? STATE_FOR_LABEL[response.label] ?? "partial" };

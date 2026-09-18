@@ -1,5 +1,11 @@
 // ask — Phase 3C.1 grounded answer-generation baseline.
 //
+// H1 pre-RAG router: obvious conversational utterances ("Hi", "Thanks",
+// "Good morning") are answered with a fixed server-authored reply and bypass
+// embedding/retrieval/reranking/gate/generation entirely. The router is
+// deterministic, conservative (whole-message phrases only) and fails closed;
+// every non-conversational query takes the unchanged path below.
+//
 // Authenticated query → query-chunks evidence (reused, never duplicated) →
 // deterministic sufficiency gate → grounded generation (Bedrock Mantle Chat
 // Completions, temp 0.0) → citation guard → groundedness tripwire → persisted
@@ -15,6 +21,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
 import { combineScopes } from "../_shared/temp-scope.ts";
+import { routePreRag } from "../_shared/pre-rag-router.ts";
 import {
   aggregateCorrectness,
   evaluateAnswer,
@@ -142,6 +149,47 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return null;
   }
 
+  // 0. H1 deterministic pre-RAG router — no LLM, no retrieval, no state.
+  //
+  // Obvious conversational utterances ("Hi", "Thanks", "Good morning") are
+  // answered with a fixed server-authored reply and bypass query embedding,
+  // retrieval, reranking, the evidence gate, RAG generation and the
+  // correctness checker entirely. Placement is deliberate: after auth,
+  // membership and conversation resolution (so the exchange still persists
+  // normally), before every expensive stage.
+  //
+  // The router is conservative and fails closed: only a whole-message
+  // conversational phrase matches; any message carrying actual content —
+  // including "Hi, what is the minimum investment?" — continues through the
+  // unchanged RAG path below, as does every UNKNOWN input.
+  const tRo0 = performance.now();
+  const route = routePreRag(query);
+  const routerMs = Math.round(performance.now() - tRo0);
+  const routerInfo = (bypassed: boolean) => ({
+    classification: route.classification,
+    bypassed,
+    latency_ms: routerMs,
+  });
+  console.log(JSON.stringify({
+    fn: "ask", caller, tenant_id: tenantId, path: "router",
+    classification: route.classification,
+    bypassed: route.classification === "CONVERSATIONAL",
+    router_ms: routerMs,
+  }));
+  if (route.classification === "CONVERSATIONAL" && route.response !== null) {
+    const persistErr = await persistAssistant(
+      route.response, "conversational", [], { prompt: null },
+      { router_ms: routerMs, total_ms: Math.round(performance.now() - t0) }, null,
+    );
+    return json(200, {
+      ok: true, answer: route.response, label: "conversational",
+      citations: [], evidence_count: 0, grounded: null, conversation_id: convId,
+      router: routerInfo(true),
+      persisted: persistErr === null,
+      ...(persistErr ? { persistence_error: persistErr } : {}),
+    });
+  }
+
   // 1. Bounded deterministic clarification gate (no LLM, no loops).
   const { count: docCount } = await db.from("documents")
     .select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
@@ -152,6 +200,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json(200, {
       ok: true, answer: clar.question, label: "clarification",
       citations: [], evidence_count: 0, grounded: null, conversation_id: convId,
+      router: routerInfo(false),
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
     });
@@ -220,6 +269,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       citations: [], evidence_count: 0,
       gate: { verdict: "INSUFFICIENT", reason: "no-selected-sources", conflicting: [] },
       grounded: null, conversation_id: convId,
+      router: routerInfo(false),
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
       scope: { notebook_id: notebookId, document_count: 0 },
@@ -278,6 +328,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       citations: [], evidence_count: retrieved.length,
       gate: { verdict: gate.verdict, reason: gate.reason },
       grounded: null, conversation_id: convId,
+      router: routerInfo(false),
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
       ...(notebookId ? { scope: { notebook_id: notebookId, document_count: (combined.ids ?? scopedDocIds ?? []).length } } : {}),
@@ -486,6 +537,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     fn: "ask", caller, tenant_id: tenantId, path: "answer",
     label, verdict: gate.verdict, evidence: retrieved.length,
     grounded: trip.grounded,
+    router_class: route.classification, router_bypassed: false, router_ms: routerMs,
   }));
   return json(200, {
     ok: true, answer, label, citations,
@@ -495,6 +547,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     tripwire: { reason: tripDiag.reason, findings: tripDiag.findings, counts: tripDiag.counts },
     correctness,
     grounded: trip.grounded, grounding_note: groundingNote,
+    router: routerInfo(false),
     timings: {
       retrieval_ms: retrievalMs, generation_ms: generationMs,
       citation_guard_ms: citationGuardMs, tripwire_ms: tripwireMs,

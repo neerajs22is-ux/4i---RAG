@@ -268,8 +268,19 @@ bounded parallel persist, claim idle 150 s); 60-chunk fixture 47 s→31 s,
 production verified unchanged, fixtures removed. **Third worker pass (D67):**
 `embed-worker` v35 (pacing gap 20 s→5 s, nothing else); 60-chunk 31 s→15 s,
 225-chunk 102 s→41 s (~355/min, 0×429); production verified unchanged,
-fixtures removed. **Do not start the visual review** until instructed.
-Refresh the relevant documents inside each pass (D53).
+fixtures removed. **Documents progress UI (uncommitted):** `DocumentsView`
+polls while pending (5 s, transitions announced) and shows live `X / Y
+chunks` + bar via new `DocumentProgress` (`countTotalChunks` /
+`getDocumentStatus` reads, no backend change); `UploadPanel` done-rows track
+their own embedding state; truth-probe 0%→80%→87%→100% + corrupt-PDF failure
+path verified live, fixtures removed. **H1 pre-RAG router (D68, deployed):**
+`ask` v43 calls `_shared/pre-rag-router.ts` after conversation resolution;
+pure conversational messages get a fixed reply and bypass
+embedding/retrieval/rerank/gate/generation; greetings carrying content and all
+other queries take the unchanged RAG path (fail closed). Smoke A–D + warm
+(1.4–2.0 s vs 9–12 s) ALL_PASS; 187/187 shared tests; frontend label mapping
+added (`conversational`, committed with H1). **Do not start the visual review**
+until instructed. Refresh the relevant documents inside each pass (D53).
 
 ## 8. Workflow rules
 

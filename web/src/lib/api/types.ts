@@ -21,6 +21,8 @@ export type GateVerdict =
  * Labels the backend can emit:
  *  - direct / partial / conflict / insufficient → answer outcomes
  *  - clarification → the deterministic clarification gate fired (no retrieval)
+ *  - conversational → the H1 pre-RAG router answered a pure greeting/thanks/
+ *    farewell deterministically (no retrieval, no LLM)
  *  - invalid → citation guard rejected the answer (HTTP 502, not returned as ok)
  *  - provider-error → model unavailable (HTTP 4xx/5xx, not returned as ok)
  */
@@ -29,7 +31,8 @@ export type AnswerLabel =
   | "partial"
   | "conflict"
   | "insufficient"
-  | "clarification";
+  | "clarification"
+  | "conversational";
 
 export type GateInfo = {
   verdict: GateVerdict;
@@ -108,6 +111,16 @@ export type AskResponse = {
   conversation_id: string;
   persisted: boolean;
   persistence_error?: string;
+  /**
+   * H1 pre-RAG router trace (additive): what the deterministic router decided
+   * for this request, whether it bypassed retrieval/generation, and its
+   * latency. Present on every 200 response.
+   */
+  router?: {
+    classification: "CONVERSATIONAL" | "KNOWLEDGE_QUERY" | "UNKNOWN";
+    bypassed: boolean;
+    latency_ms: number;
+  };
 };
 
 /** Clarification responses have no evidence and no gate. */

@@ -1096,3 +1096,24 @@ D67. Third worker pass: pacing gap 20 s → 5 s (single constant)
   query/rerank bursts, or gaps need restoring for any reason — revert is one
   constant + redeploy.
 
+D68. H1 pre-RAG router: deterministic conversational bypass in `ask`
+
+- Decision: add `_shared/pre-rag-router.ts` (pure, no LLM/I/O) and call it in
+  `ask` after auth/membership/conversation, before clarification/retrieval.
+  CONVERSATIONAL = the whole normalized message equals a fixed phrase
+  (hi/hello/hey/good morning-afternoon-evening/thanks family/bye family); the
+  reply is server-authored and tiny. Everything else — including greetings
+  carrying content and all UNKNOWN inputs — continues through the unchanged
+  RAG path (fail closed). Response gains an additive `router` trace and the
+  router logs one metadata-only line per request.
+- Reason: "Hi" previously paid full embedding/retrieval/rerank/generation and
+  could produce an oversized answer. This is Phase H1 of the Harness program,
+  deliberately the smallest deterministic step: no classifier, no tools, no
+  planner.
+- Consequence: `ask` v43 deployed; conversational turn ≈1.4–2.0 s warm (auth +
+  conversation/message writes only) vs ≈9–12 s RAG; persisted as label
+  `conversational` so history shows the exchange. 187/187 shared tests pass
+  (6 new router tests: listed positives/negatives, normalization, fail-closed).
+- Revisit if: conversational variants need expanding (keep exact-match),
+  or the Harness H2 token work needs router classes for tool gating.
+

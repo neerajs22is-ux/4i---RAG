@@ -5,9 +5,11 @@ truth for the *current* production system. Part 1 below describes what is actual
 deployed and verified. Part 2 is the original pre-implementation analysis
 (2026-09-14), preserved for history and explicitly **SUPERSEDED**.
 
-- Current production checkpoint: git HEAD `e3a9062`; deployed and ACTIVE:
-  `ingest-pdf` v33, `embed-worker` v29, `query-chunks` v29, `ask` v38,
-  `storage-cleanup` v1 (see §1.15).
+- Current production checkpoint: git HEAD `5271e9a` plus the H1 router
+  commit (D68); deployed and ACTIVE:
+  `ingest-pdf` v36, `embed-worker` v35, `query-chunks` v33, `ask` v43,
+  `storage-cleanup` v3 (see §1.15). The H1 pre-RAG router request is deployed
+  in `ask` v43; its source is committed at the H1 checkpoint.
 - For the fresh-session continuation entry point see `SESSION_HANDOFF.md`.
 - For decision records see `DECISIONS.md`.
 - **This document covers the backend/RAG only.** The frontend lives in `web/`
@@ -58,6 +60,8 @@ POST /functions/v1/ask  { tenant_id, query (≤1000 chars), conversation_id? }
  → bearer JWT → auth.getUser            (401 fail-closed)
  → membership lookup                    (403)
  → conversation: verify or create
+ → pre-RAG router (H1)                  (deterministic; CONVERSATIONAL → fixed
+                                         reply, no embedding/retrieval/gate/LLM)
  → clarification gate                   (deterministic; no LLM)
  → retrieval  (internal call to query-chunks)
  → evidence gate (verifyEvidence)
