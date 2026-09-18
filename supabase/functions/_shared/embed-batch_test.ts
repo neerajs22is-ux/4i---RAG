@@ -70,7 +70,7 @@ Deno.test("planBatches: empty input yields no batches", () => {
 
 Deno.test("parseBatchResponse: accepts a well-formed positional response", () => {
   const raw = {
-    model: "voyage-4",
+    model: "jina-embeddings-v5-text-small",
     data: [0, 1].map((i) => ({ embedding: vector(), index: i })),
     usage: { total_tokens: 700 },
   };
@@ -87,7 +87,7 @@ Deno.test("parseBatchResponse: maps out-of-order indices back to request order",
   const v0 = vector().fill(0.1);
   const v1 = vector().fill(0.9);
   const raw = {
-    model: "voyage-4",
+    model: "jina-embeddings-v5-text-small",
     data: [{ embedding: v1, index: 1 }, { embedding: v0, index: 0 }],
   };
   const result = parseBatchResponse(raw, 2);
@@ -99,51 +99,51 @@ Deno.test("parseBatchResponse: maps out-of-order indices back to request order",
 });
 
 Deno.test("parseBatchResponse: falls back to positional order without indices", () => {
-  const raw = { model: "voyage-4", data: [{ embedding: vector() }] };
+  const raw = { model: "jina-embeddings-v5-text-small", data: [{ embedding: vector() }] };
   const result = parseBatchResponse(raw, 1);
   assert(result.ok, "should parse");
 });
 
 Deno.test("parseBatchResponse: rejects wrong model", () => {
-  const raw = { model: "voyage-3.5", data: [{ embedding: vector(), index: 0 }] };
+  const raw = { model: "voyage-4", data: [{ embedding: vector(), index: 0 }] };
   const result = parseBatchResponse(raw, 1);
   assert(!result.ok, "wrong model must be rejected");
 });
 
 Deno.test("parseBatchResponse: rejects a short response (partial batch)", () => {
-  const raw = { model: "voyage-4", data: [{ embedding: vector(), index: 0 }] };
+  const raw = { model: "jina-embeddings-v5-text-small", data: [{ embedding: vector(), index: 0 }] };
   const result = parseBatchResponse(raw, 12);
   assert(!result.ok, "count mismatch must be rejected so nothing is persisted");
 });
 
 Deno.test("parseBatchResponse: rejects a truncated vector", () => {
-  const raw = { model: "voyage-4", data: [{ embedding: [0.1, 0.2], index: 0 }] };
+  const raw = { model: "jina-embeddings-v5-text-small", data: [{ embedding: [0.1, 0.2], index: 0 }] };
   assert(!parseBatchResponse(raw, 1).ok, "wrong dimensions must be rejected");
 });
 
 Deno.test("parseBatchResponse: rejects non-finite values", () => {
   const bad = vector();
   bad[10] = Number.NaN;
-  const raw = { model: "voyage-4", data: [{ embedding: bad, index: 0 }] };
+  const raw = { model: "jina-embeddings-v5-text-small", data: [{ embedding: bad, index: 0 }] };
   assert(!parseBatchResponse(raw, 1).ok, "NaN must be rejected");
 });
 
 Deno.test("parseBatchResponse: rejects duplicate indices", () => {
   const raw = {
-    model: "voyage-4",
+    model: "jina-embeddings-v5-text-small",
     data: [{ embedding: vector(), index: 0 }, { embedding: vector(), index: 0 }],
   };
   assert(!parseBatchResponse(raw, 2).ok, "duplicate index must be rejected");
 });
 
 Deno.test("parseBatchResponse: rejects an out-of-range index", () => {
-  const raw = { model: "voyage-4", data: [{ embedding: vector(), index: 7 }] };
+  const raw = { model: "jina-embeddings-v5-text-small", data: [{ embedding: vector(), index: 7 }] };
   assert(!parseBatchResponse(raw, 1).ok, "out-of-range index must be rejected");
 });
 
 Deno.test("parseBatchResponse: rejects null and malformed bodies", () => {
   assert(!parseBatchResponse(null, 1).ok, "null body");
-  assert(!parseBatchResponse({ model: "voyage-4" }, 1).ok, "missing data");
+  assert(!parseBatchResponse({ model: "jina-embeddings-v5-text-small" }, 1).ok, "missing data");
   assert(!parseBatchResponse("nope", 1).ok, "string body");
 });
 

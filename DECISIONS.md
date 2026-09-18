@@ -946,3 +946,153 @@ D61. Temporary chat files in the chat UI: conversation-surface attach, no new pr
   attachment-created conversations), or the backend adds an explicit
   conversation-create endpoint (use it instead of the PostgREST insert).
 
+D62. Benchmark-only reranker scaffolding before any Jina embedding work
+(benchmark code implemented; no benchmark executed; production unchanged)
+
+- Decision: establish an isolated benchmark rerank contract first: Jina
+  `jina-reranker-v3.5` transport with injected calls only, question + chunk
+  text as semantic input, locked `top_n = 8`, and mirrored no-rerank/rerank
+  modes over the same candidate pool. The provider configuration is separate
+  from any future Jina embedding configuration.
+- Reason: a reranker must be measurable independently of a changed embedding
+  model; otherwise Jina score changes and rerank-order changes cannot be
+  distinguished. Isolation avoids Voyage/Jina vector mixing, production RPC
+  changes, `chunks.embedding` writes, historical-artifact overwrites, and
+  benchmark persistence becoming production state.
+- Consequence: Step 3 can add Jina document/query vectors into a separate
+  benchmark partition while reusing the same candidate-pool contract and
+  rerank/no-rerank comparison. Jina embeddings remain not implemented, and
+  production retrieval remains Voyage-only.
+- Revisit if: a non-Jina reranker is selected (its contract must pass the same
+  provenance/index/top-count/isolation tests), or the benchmark pool needs a
+  larger candidate window (current locked pool remains ≤50, final 8).
+
+D63. Benchmark-only Jina embedding/retrieval path (implemented; 34-case run executed, no production change)
+
+- Decision: implement the isolated Jina benchmark path as additive-only
+  objects: `benchmark_embeddings` table + `benchmark_match_chunks` mirror
+  (migration applied 2026-09-18, verified 0 rows), `benchmark-jina-embed`
+  provider adapter (`jina-embeddings-v5-text-small`, passage/query tasks, 1024
+  dims, normalized float), a `benchmark-retrieval` Edge function mirroring
+  locked selection semantics (deployed v2; empty-scope readiness PASS with zero
+  provider calls), a benchmark-only `benchmark-answer` path reusing the exact
+  shared gate/prompt/citation/generation semantics with no persistence
+  (implemented + tested; `benchmark-answer` deployed v1 in Step 5), and a
+  retrieval+answer `eval/run_benchmark.py` with explicit
+  provider/model/reranker/run metadata.
+  One operator-provisioned `JINA_API_KEY` serves both benchmark adapters;
+  production stays Voyage voyage-4; benchmark execution has not happened.
+- Reason: a same-chunk, same-question, same-algorithm comparison requires Jina
+  vectors in a separate partition with an exact retrieval mirror; anything less
+  either risks production contamination or invalidates the experiment.
+- Consequence: Step 5 populated one benchmark run (`jina-34case-01`, 226
+  mapped-document vectors) and compared retrieval + answer metrics against the
+  frozen Voyage control without touching production state, code, or artifacts:
+  hit 0.853/0.882 (A/B) vs 0.882 control; recall@8 0.532/0.581 vs 0.598; MRR
+  0.753/0.833 vs 0.793; gate match 0.324/0.382 vs 0.441; label match identical
+  0.235. Deployed production versions observed during this step (v36/v31/v32/
+  v40/v3, redeployed alongside a secrets rotation) are behaviorally consistent
+  with repo code per Sep-18 probes, but the experiment depends only on
+  repo-locked semantics, not on production bytes. No quality, speed, or
+  production conclusions drawn.
+- Revisit if: answer/label comparison needs anything beyond the implemented
+  benchmark-answer path, or a different embedding model is required (report the
+  blocker first; do not substitute silently).
+
+D64. Production embedding stack moved Voyage-4 → Jina v5-text-small + reranker
+(deployed; re-embedded; smoke-validated; Voyage vectors preserved for rollback)
+
+- Decision: switch production document/query embeddings to Jina
+  `jina-embeddings-v5-text-small` (1024-dim, `retrieval.passage` /
+  `retrieval.query`, normalized float, single `JINA_API_KEY` secret) with
+  `jina-reranker-v3.5` over the fused pool (`top_n` = final K), keeping dense
+  20 / lexical 20 / cap 50 / RRF-60 / final-8, the evidence gate, prompts,
+  citation guard, tripwire, correctness checker and Mantle generation
+  byte-identical. Voyage vectors are preserved untouched in
+  `chunks.embedding_voyage` (migration `20260918000001`); `chunks.embedding`
+  keeps its shape, HNSW index and RPC contract. A reranker outage degrades to
+  RRF order (`reranked: false`) instead of failing retrieval.
+- Status: DEPLOYED (`embed-worker` v32, `query-chunks` v33, `ask` v41; nothing
+  else touched) + unit-validated (181/181 shared tests; `deno check`/`lint`
+  clean on touched files). Migration verified: 563/563 chunks backed up, then
+  re-embedded doc-by-doc (13/226/50/274 chunks; 0 NULL, 1024-dim finite,
+  `embedding_model` = Jina on all 4 docs; 8 succeeded jobs, 0 errors). Smoke
+  validation PASS on live data: known-factual (direct/SUPPORTED, cited),
+  unanswerable (honest non-answer, 0 cites), new 1-page PDF upload → ready in
+  11 s → cited answer, same-conversation follow-up; fixtures removed
+  afterwards (document + 3 conversations deleted, production counts restored).
+- Reason: the frozen Jina benchmark (34-case + real CA corpus) measured
+  retrieval at or above the Voyage control with citations intact, and the
+  1024-dim shape change needs no schema, index or retrieval redesign — an
+  in-place vector swap with a preserved rollback copy is the smallest safe
+  migration.
+- Consequence: `VOYAGE_API_KEY` stays configured but unused. Rollback while
+  the backup column exists: copy `embedding_voyage` back over `embedding`,
+  restore `embedding_model`, redeploy pre-migration functions. Do NOT drop
+  `embedding_voyage` until rollback is explicitly retired.
+- Revisit if: Jina rate behavior degrades at production query scale, or the
+  worker pacing budget needs recalibration for the higher envelope.
+
+D65. Worker batch fill for the Jina envelope (pacing cadence unchanged)
+
+- Decision: raise the per-request batch envelope from 12 chunks / 12,000 chars
+  to 32 chunks / 32,000 chars and the per-tick token guard from 9,500 to
+  30,000 tokens, keeping 3 sequential requests per tick ~20 s apart, the
+  per-minute cron, the 45 s claim idle, CAS claiming, and all retry/fatal paths
+  byte-identical. Worst-case tick ≈23K tokens/min (≈23% of the documented
+  100K TPM, shared with reranking); ≤3 requests in any rolling minute
+  (≈3% of 100 RPM).
+- Reason: live measurement showed the Voyage-era 36-chunks/tick cap holding
+  ingestion to ~18 chunks/min while the Jina envelope sat ~97% idle (0×429
+  across 150+ calls); the 32-input batch shape was already proven live by the
+  benchmark population path with zero failures. This is the recalibration D64
+  anticipated — batch fullness only, no cadence change.
+- Consequence: up to 96 chunks per ~2-minute tick cycle (≈3–4× throughput;
+  a ~190-chunk document completes in ~2 ticks instead of ~6). Rollback is a
+  constant revert + redeploy; no schema, retrieval, or evaluation artifact is
+  affected.
+- Revisit if: sustained per-tick token totals approach the guard, 429s appear,
+  or query/rerank traffic needs a share of the budget reserved.
+
+D66. Second worker pass: 48-chunk batches, same-job continuation, parallel persist
+
+- Decision: (a) `CHUNKS_PER_REQUEST` 32→48, `MAX_CHARS_PER_REQUEST`
+  32K→48K, per-pass token guard 30K→40K (3 req/pass and 20 s gaps unchanged);
+  (b) one invocation may run up to 2 sequential passes over its SAME claimed
+  job (fresh NULL re-read per pass; second pass only after a clean first pass
+  and within 100 s of invocation start; ~110 s worst case); (c) per-batch
+  persist becomes bounded parallel single-row UPDATEs (≤48 in flight, same
+  predicates + non-NULL guard — no bulk statement, no schema change);
+  (d) `CLAIM_IDLE_SECONDS` 45→150 s so cron never steals a live invocation
+  (trigger path bypasses idle; stuck-job backstop ≤ ~3.5 min).
+- Reason: live v33 measurement on a 225-chunk doc (upload→ready 222 s) showed
+  Jina ~2–3 s/req (10%) vs sequential UPDATEs ~0.15–0.35 s/chunk (~45%) vs 20 s
+  pacing gaps vs 71 s cron idle, plus a cron/trigger overlap at ~t=48 s (idle
+  45 s < 50 s tick) wasting one Jina request per large doc. The 48-input shape
+  keeps per-request tokens ≈11.5K; two passes span ~110 s so rolling-minute
+  usage stays under half the TPM envelope.
+- Consequence: same 60-chunk fixture 47 s→31 s (single claim, 2 requests);
+  same 225-chunk doc 222 s→102 s in ONE invocation (attempts delta 1, 5
+  requests, 0×429, 0 errors, ~135 chunks/min). Small docs stay pacing-bound
+  by design (gaps untouched). Rollback is a constant revert + redeploy.
+- Revisit if: 429s appear, Jina_48 latency climbs vs Jina_32 (~2 s), Edge
+  kills long invocations (>~110 s unproven beyond ~100 s observed), or the
+  remaining 20 s gaps become the target of a third pass.
+
+D67. Third worker pass: pacing gap 20 s → 5 s (single constant)
+
+- Decision: `PACED_REQUEST_GAP_MS` 20_000→5_000; every other constant,
+  budget, claim/CAS, retry, fatal, persist, and continuation rule unchanged.
+- Reason: gaps were ~65% of small-doc and ~60% of large-doc time at v34
+  while rolling usage sat at ~35K TPM / ~3 RPM vs the 100K TPM / 100 RPM
+  envelope. Worst-case rolling minute is now a full 2-pass invocation
+  (6 requests, ≈69K tokens) — thinner margin, still bounded, guard intact.
+- Consequence (live, same fixtures): 60 chunks 31 s→15 s (2 Jina reqs,
+  single claim); 225 chunks 102 s→41 s (5 reqs in ~40 s, single claim,
+  ~355 chunks/min embedding rate). 0×429, Jina latency steady at ~2–3 s,
+  0 errors. Small-PDF path: ready 12 s, correct cited answers, honest
+  non-answer; production unchanged.
+- Revisit if: 429s appear under concurrent load, TPM headroom is needed for
+  query/rerank bursts, or gaps need restoring for any reason — revert is one
+  constant + redeploy.
+

@@ -220,9 +220,56 @@ documents (their files; left untouched — re-upload registers normally, or
 ## 7. Immediate next action
 
 Temporary chat files are live-validated end to end (D60) including the
-frontend pass (D61; 30/30 live checks, production restored). **Do not start
-the visual review** until instructed. Refresh the relevant documents inside
-each pass (D53).
+frontend pass (D61; 30/30 live checks, production restored). **Step 2 is
+complete:** benchmark-only `jina-reranker-v3.5` scaffolding is implemented and
+unit/lint/type-tested (D62). **Step 3 is complete:** the isolated Jina
+benchmark embedding/retrieval path is implemented and tested (41/41 unit tests;
+D63) — additive migration authored but NOT applied, functions NOT deployed,
+Jina/Voyage/benchmarks NOT run, production untouched. **Step 4 is complete:**
+the benchmark-only answer path (exact shared gate/prompt/citation/generation,
+no persistence) is implemented and tested (50/50 unit tests); the benchmark
+migration is APPLIED (table+mirror exist, 0 rows); `benchmark-retrieval` is
+DEPLOYED (v2; empty-scope readiness PASS, zero provider calls);
+`benchmark-answer` is implemented but NOT deployed per the deploy-only
+allowlist. No benchmark executed; production untouched. **Step 5 is complete:**
+`benchmark-answer` deployed (v1); one benchmark run (`jina-34case-01`, 226
+vectors) populated and verified; all 34 cases executed for A (no rerank) and B
+(reranked) against the frozen Voyage control with production verified
+unchanged afterwards. **CA-corpus audit complete (read-only):** the SEBI AIF
+Regulations document is verified live (100 pp / 1,094,459 B / 274 chunks, all
+`ready` with vectors + tsv); chunk distribution clean (0 empty, 0 duplicates,
+0 missing pages); suitable for a 25–40-case gold set; no questions, runs, or
+mutations made. **CA gold set frozen:** 32 cases
+(`eval/cases/gold_cases_ca.json`) with content-grounded mappings
+(`eval/mappings/chunk_map_ca.json`, 0 unresolved), validation PASS; runner +
+benchmark retrieval now capture per-stage timing (embed/RPC/fusion/rerank,
+query/rerank tokens) for the CA run. **CA benchmark executed:** fresh run
+`jina-ca-32case-01` (274 vectors verified) over all 32 cases — A no-rerank
+(hit 0.844, MRR 0.828), B reranked (hit 0.906, MRR 0.891); production verified
+unchanged; no ranking or production decision made. **Provider-decision audit
+complete (evidence only):** both frozen runs consolidated with timing, token
+economics, migration surface, risks, and a scoreless decision matrix; awaiting
+the human production decision. Consolidated benchmark report:
+`docs/JINA_VS_VOYAGE_BENCHMARK_REPORT.md` (16 sections, no selection made).
+**Production Jina migration complete (D64):** `embed-worker` v32 /
+`query-chunks` v33 / `ask` v41 deployed (nothing else touched); Voyage vectors
+preserved in `chunks.embedding_voyage` (migration `20260918000001`); all 563
+chunks re-embedded doc-by-doc (0 NULL, 1024-dim finite, Jina model on all 4
+docs); smoke validation PASS (factual/cited, honest refusal, new-PDF upload →
+ready in 11 s, follow-up) with fixtures removed. Rollback available while the
+backup column exists. **Worker batch-fill (D65):** `embed-worker` v33 raises
+per-request batches to the benchmark-validated 32 inputs / 32K chars with a
+30K-token tick guard (3 req/tick, 20 s gaps, cron/claim/retry unchanged);
+live-validated on a 60-chunk fixture (upload→ready 47 s vs 195 s before, single
+triggered tick, 0 errors, fixture removed). **Second worker pass (D66):**
+`embed-worker` v34 (48-chunk batches, 2-pass same-job continuation ≤ ~110 s,
+bounded parallel persist, claim idle 150 s); 60-chunk fixture 47 s→31 s,
+225-chunk doc 222 s→102 s in ONE invocation (5 Jina reqs, 0×429, ~135/min);
+production verified unchanged, fixtures removed. **Third worker pass (D67):**
+`embed-worker` v35 (pacing gap 20 s→5 s, nothing else); 60-chunk 31 s→15 s,
+225-chunk 102 s→41 s (~355/min, 0×429); production verified unchanged,
+fixtures removed. **Do not start the visual review** until instructed.
+Refresh the relevant documents inside each pass (D53).
 
 ## 8. Workflow rules
 

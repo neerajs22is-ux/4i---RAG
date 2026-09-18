@@ -35,7 +35,7 @@ Source-of-truth hierarchy:
 
 Browser app (Next.js; see `UI_ARCHITECTURE.md`) → Supabase Edge Functions. The
 browser holds only its Supabase publishable key + the user's Auth JWT. It
-**never** calls a model provider (Voyage or Bedrock/Mantle) directly; all
+**never** calls a model provider (Jina or Bedrock/Mantle) directly; all
 provider traffic is server-side.
 
 Edge Functions (Deno), all ACTIVE:
@@ -43,8 +43,8 @@ Edge Functions (Deno), all ACTIVE:
 | Function | Role | JWT |
 |---|---|---|
 | `ingest-pdf` | PDF → chunks: `action` = `ingest` / `retry` / `delete-document` | gateway `verify_jwt` on; caller JWT data plane |
-| `embed-worker` | Cron-driven Voyage embedding of pending chunks | `verify_jwt` **off**; gated by `x-worker-key` timing-safe secret |
-| `query-chunks` | Query embedding + hybrid retrieval (optional notebook/document scope) | caller JWT |
+| `embed-worker` | Cron-driven Jina embedding of pending chunks | `verify_jwt` **off**; gated by `x-worker-key` timing-safe secret |
+| `query-chunks` | Query embedding + hybrid retrieval + rerank (optional notebook/document scope) | caller JWT |
 | `ask` | Full answering pipeline (see 1.2) | caller JWT |
 | `storage-cleanup` | Bounded orphan-object cleanup for one tenant (see 1.16) | caller JWT + membership; `apply` requires owner/admin |
 
@@ -93,12 +93,13 @@ POST /functions/v1/ask  { tenant_id, query (≤1000 chars), conversation_id? }
 
 ## 1.3 Retrieval (LOCKED)
 
-Provider: Voyage AI `voyage-4`, **1024-dim float**, `input_type: "document"` for
-corpus and `"query"` for queries. Query embeddings are produced server-side.
+Provider: Jina AI `jina-embeddings-v5-text-small`, **1024-dim float**,
+`task: "retrieval.passage"` for corpus and `"retrieval.query"` for queries
+(`normalized: true`). Query embeddings are produced server-side.
 
 `query-chunks` behavior:
 
-- Server-side query embedding (`VOYAGE_MODEL` pinned; model mismatch → 502;
+- Server-side query embedding (Jina model pinned; model mismatch → 502;
   vector length and finiteness validated).
 - One RPC round trip: `public.match_chunks(p_tenant_id, p_query_vector,
   p_query_text, p_dense_n, p_lex_n, p_document_ids)`. The last parameter is the
@@ -125,6 +126,11 @@ corpus and `"query"` for queries. Query embeddings are produced server-side.
   (`FINAL_K_CAP = 20`), deterministic tie-break by `chunk_id`.
 - **No global dense threshold/floor.** Retrieval is recall-first; the evidence
   gate owns the cut.
+- **Second-stage rerank (D64).** The full fused candidate pool (≤50, question +
+  chunk text only) is reranked by `jina-reranker-v3.5` (`top_n` = final K);
+  evidence order follows the reranker while `fused_rank`/`fused_score` keep
+  their RRF provenance values. A reranker failure degrades to RRF order
+  (`reranked: false`) instead of failing retrieval.
 - Provenance per evidence item: `chunk_id`, `document_id`, `tenant_id`,
   `file_name`, `page`, `content`, `dense_score/dense_rank`, `lex_score/lex_rank`,
   `fused_rank/fused_score`.
@@ -246,11 +252,17 @@ all roles).
 
 `embed-worker`: pg_cron (every minute) → pg_net → worker with `x-worker-key`.
 Per tick it claims one idle `processing` job via a compare-and-swap on
-`attempts` and embeds in **bounded batches** (D48/D58): up to
-`CHUNKS_PER_REQUEST = 12` chunks per Voyage request, at most
-`REQUESTS_PER_TICK = 3` requests sent sequentially ~20 s apart, with a
-12,000-character cap per request and a 9,500 per-tick token guard (≈80% of the
-confirmed free account's 10K TPM at peak; ≤3 requests in any rolling minute).
+`attempts` and embeds in **bounded passes** (D48/D58/D65/D66): each pass sends
+up to `REQUESTS_PER_TICK = 3` sequential Jina requests of up to
+`CHUNKS_PER_REQUEST = 48` chunks / 48,000 chars with a 40,000 per-pass token
+guard (~5 s uniform gaps within and across passes; a full two-pass invocation
+fits inside ~50 s, so rolling-minute usage peaks near ~69K tokens vs the
+100K TPM envelope of 100 RPM / 100K TPM shared with reranking). One invocation may run up to 2 passes over the SAME claimed job
+(D66 continuation, ~110 s worst case) instead of waiting for the next cron
+tick; per-batch results persist via bounded parallel single-row UPDATEs behind
+the non-NULL guard (same predicates as the old sequential loop). The cron
+claim idle (150 s) exceeds the worst-case invocation so the sweep never steals
+a live job; the direct post-parse trigger bypasses the idle threshold.
 A registration that just persisted chunks also triggers the worker directly
 with the job id (same claim, same pass); the cron sweep remains the backstop.
 A whole batch is validated (model exact, count exact, complete index mapping,
@@ -265,8 +277,8 @@ within seconds and embeds up to 36 chunks immediately, with further ticks on
 the per-minute cron. Live upload→ready: 20 s (148 KB / 9 chunks), 195 s
 (2.0 MB / 60 chunks); ~7 min projected for 226 chunks. Parsing is sub-second
 locally for these sizes; the per-minute cadence plus the 36-chunks/min budget
-is the remaining pacing, by design under the confirmed free Voyage tier
-(3 RPM / 10K TPM — see D58).
+is the remaining pacing, by design under the documented Jina envelope
+(100 RPM / 100K TPM shared with reranking — see D58/D64).
 
 ## 1.12 Observability (bounded)
 
@@ -283,7 +295,7 @@ vectors, or answer/evidence content.
 ## 1.13 Security boundaries
 
 - No provider credential is ever browser-visible; no key in the repo or logs.
-- Secret names (values never in repo/logs): `VOYAGE_API_KEY`, `MANTLE_API_KEY`,
+- Secret names (values never in repo/logs): `JINA_API_KEY`, `MANTLE_API_KEY`,
   `ANSWER_MODEL_ID`, `WORKER_CRON_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
   `SUPABASE_SECRET_KEYS`/`SUPABASE_SERVICE_ROLE_KEY`, plus Vault secrets
   `embed_worker_url`/`embed_worker_key`.
@@ -303,9 +315,9 @@ Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
 ## 1.15 Deployment state
 
 - Supabase project ref `uqlpfgtkmsaexmtieulp`, region `ap-southeast-2`.
-- AWS Bedrock Mantle region `ap-south-1`; Voyage server-side.
-- Deployed and ACTIVE: `ingest-pdf` **v35**, `embed-worker` **v30** (+ per-minute
-  Cron), `query-chunks` **v31**, `ask` **v39**, `storage-cleanup` **v2**.
+- AWS Bedrock Mantle region `ap-south-1`; Jina server-side.
+- Deployed and ACTIVE: `ingest-pdf` **v36**, `embed-worker` **v31** (+ per-minute
+  Cron), `query-chunks` **v32**, `ask` **v40**, `storage-cleanup` **v3**.
 - `CORRECTNESS_CHECKER_ENABLED` OFF. No other feature flag enabled.
 - Bucket `company-documents` is private with `file_size_limit = 25 MiB`; the
   corpus grows through normal use.**Production snapshot (2026-09-17):** 2
@@ -356,6 +368,12 @@ in `DECISIONS.md` Part 4 and a validated report under `eval/runs/`.
   (`expired_temp_documents` section in `storage-cleanup`, bounded, via the
   `delete-document` primitive); no separate subsystem. Unscoped retrieval
   excludes temporary rows whenever any exist (else legacy NULL path).
+- **Jina embedding stack (D64, migration `20260918000001` applied)** —
+  production embeddings moved Voyage-4 → `jina-embeddings-v5-text-small`
+  (`retrieval.passage` documents / `retrieval.query` questions, 1024-dim,
+  normalized) with `jina-reranker-v3.5` over the fused pool; `chunks.embedding`
+  keeps its shape/index, Voyage vectors preserved in `embedding_voyage` for
+  rollback; retrieval constants, gate, prompts and generation unchanged.
 - **Pre-UI regression** — full 34-case frozen harness: retrieval bit-identical to
   the frozen baseline, gate/label reproduce the latest chain measurement,
   `unscoped == full-corpus scope` on 34/34, PASS

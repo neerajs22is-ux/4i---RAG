@@ -1,11 +1,13 @@
 // query-chunks — Phase 3B.1 production hybrid retrieval vertical slice.
 //
-// query → server-side Voyage voyage-4 query embedding (input_type "query")
-// → match_chunks RPC (tenant-filtered dense + FTS candidates, one round trip)
-// → deterministic fusion (RRF default) → bounded evidence with provenance.
+// query → server-side Jina v5-text-small query embedding (task
+// "retrieval.query") → match_chunks RPC (tenant-filtered dense + FTS
+// candidates, one round trip) → deterministic fusion (RRF default) →
+// second-stage rerank over the fused candidate pool → bounded evidence with
+// provenance.
 //
 // Recall-first: no relevance threshold inside retrieval; the generation gate
-// owns the cut. No reranker, no LLM, no planner. Metadata-only logs; never
+// owns the cut. No LLM, no planner. Metadata-only logs; never
 // keys, content, or vectors.
 //
 // UNCALIBRATED starting constants (flagged): candidate counts, fusion
@@ -14,11 +16,13 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { callReranker, mapRerankedPool, parseRerankResponse, RERANK_API_KEY_ENV } from "../_shared/rerank.ts";
 import { unionDocIds } from "../_shared/temp-scope.ts";
 
-const VOYAGE_MODEL = "voyage-4";
-const VOYAGE_DIMENSIONS = 1024;
-const VOYAGE_ENDPOINT = "https://api.voyageai.com/v1/embeddings";
+const JINA_MODEL = "jina-embeddings-v5-text-small";
+const JINA_DIMENSIONS = 1024;
+const JINA_TASK_QUERY = "retrieval.query";
+const JINA_ENDPOINT = "https://api.jina.ai/v1/embeddings";
 
 // UNCALIBRATED — lock in the calibration task. Structural starting points
 // only (candidate depth + fusion shape), never tuned values.
@@ -317,40 +321,45 @@ Deno.serve(async (req: Request): Promise<Response> => {
       notebook_id: notebookId, allowed_documents: 0, evidence: 0, total_ms: totalMs,
     }));
     return json(200, {
-      ok: true, model: VOYAGE_MODEL, fusion: String(body.fusion ?? FUSION_DEFAULT).toLowerCase(),
+      ok: true, model: JINA_MODEL, fusion: String(body.fusion ?? FUSION_DEFAULT).toLowerCase(),
       query_tokens: 0, candidates: { dense: 0, lexical: 0 }, evidence: [],
-      scope: { notebook_id: notebookId, document_count: 0, reason: "no_selected_sources" },
-      timings: { embed_ms: 0, retrieval_ms: 0, total_ms: totalMs },
+      reranked: false,
+      scope: { notebook_id: notebookId, document_count: 0, reason: "no-selected-sources" },
+      timings: { embed_ms: 0, retrieval_ms: 0, rerank_ms: 0, total_ms: totalMs },
     });
   }
 
-  const apiKey = Deno.env.get("VOYAGE_API_KEY") ?? "";
-  if (!apiKey) return json(500, { ok: false, error: "VOYAGE_API_KEY not configured" });
+  const apiKey = Deno.env.get("JINA_API_KEY") ?? "";
+  if (!apiKey) return json(500, { ok: false, error: "JINA_API_KEY not configured" });
 
-  // 1. Server-side query embedding (input_type "query" per contract).
+  // 1. Server-side query embedding (task "retrieval.query" per contract).
   const tE0 = performance.now();
   let qvec: number[];
   let queryTokens = 0;
   try {
-    const r = await fetch(VOYAGE_ENDPOINT, {
+    const r = await fetch(JINA_ENDPOINT, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         input: [query],
-        model: VOYAGE_MODEL,
-        input_type: "query",
-        output_dimension: VOYAGE_DIMENSIONS,
+        model: JINA_MODEL,
+        task: JINA_TASK_QUERY,
+        dimensions: JINA_DIMENSIONS,
+        normalized: true,
+        embedding_type: "float",
       }),
     });
     if (!r.ok) return json(502, { ok: false, error: `query embed status ${r.status}` });
     const parsed = await r.json() as {
-      data?: Array<{ embedding?: number[] }>; model?: string; usage?: { total_tokens?: number };
+      data?: Array<{ embedding?: number[]; index?: unknown }>; model?: unknown; usage?: { total_tokens?: number };
     };
-    if (parsed.model !== VOYAGE_MODEL) {
+    const responseModel = (parsed as { model?: unknown } | null)?.model;
+    if (responseModel !== undefined && responseModel !== JINA_MODEL) {
       return json(502, { ok: false, error: "query embed model mismatch" });
     }
-    qvec = parsed.data?.[0]?.embedding ?? [];
-    if (qvec.length !== VOYAGE_DIMENSIONS || !qvec.every((v) => Number.isFinite(v))) {
+    const first = (parsed?.data ?? [])[0]?.embedding ?? [];
+    qvec = first;
+    if (qvec.length !== JINA_DIMENSIONS || !qvec.every((v) => Number.isFinite(v))) {
       return json(502, { ok: false, error: "invalid query vector" });
     }
     queryTokens = parsed.usage?.total_tokens ?? 0;
@@ -375,16 +384,51 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const cands = (rows ?? []) as Candidate[];
 
   // 3. Deterministic fusion in Edge; tie-break chunk_id for stable order.
+  // The full fused pool (not just the final cut) feeds the reranker below.
   const fused = fusion === "rrf" ? rrfFuse(cands) : blendFuse(cands, BLEND_DENSE_WEIGHT);
-  const ranked = [...fused.entries()]
+  const pool = [...fused.entries()]
     .map(([id, v]) => ({ id, ...v }))
     .sort((a, b) => (b.fused - a.fused) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .slice(0, finalK);
+    .map((e, i) => ({ ...e, rrfRank: i + 1 }));
   const denseCount = cands.filter((c) => c.channel === "dense").length;
   const lexCount = cands.filter((c) => c.channel === "lexical").length;
 
-  const evidence = ranked.map((e, i) => ({
-    fused_rank: i + 1,
+  // 4. Second-stage rerank over the fused candidate pool (top finalK). A
+  // reranker failure degrades to RRF order instead of failing retrieval, so
+  // a reranker outage never takes down question answering.
+  const tRr0 = performance.now();
+  let ordered = pool;
+  let reranked = false;
+  if (pool.length > 0) {
+    const rerankCall = await callReranker({
+      apiKey,
+      query,
+      documents: pool.map((e) => e.row.content),
+      topN: Math.min(finalK, pool.length),
+      maxCandidates: CANDIDATE_CAP,
+    });
+    if (rerankCall.ok) {
+      const parsed = parseRerankResponse(rerankCall.payload, pool.length, Math.min(finalK, pool.length));
+      if (parsed.ok) {
+        const mapped = mapRerankedPool(pool, parsed.ranked);
+        if (mapped) {
+          ordered = mapped;
+          reranked = true;
+        }
+      } else {
+        console.log(JSON.stringify({ fn: "query-chunks", path: "rerank-invalid", error: parsed.error }));
+      }
+    } else {
+      console.log(JSON.stringify({
+        fn: "query-chunks", path: "rerank-failed", kind: rerankCall.kind, status: rerankCall.status,
+      }));
+    }
+  }
+  const rerankMs = Math.round(performance.now() - tRr0);
+  const ranked = ordered.slice(0, finalK);
+
+  const evidence = ranked.map((e) => ({
+    fused_rank: e.rrfRank,
     fused_score: e.fused,
     chunk_id: e.row.chunk_id,
     document_id: e.row.document_id,
@@ -403,18 +447,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
     scope: notebookId ? "notebook" : allowedDocIds ? "documents" : "unscoped",
     allowed_documents: allowedDocIds ? allowedDocIds.length : null,
     dense_candidates: denseCount, lex_candidates: lexCount,
-    evidence: evidence.length, query_tokens: queryTokens, total_ms: totalMs,
+    evidence: evidence.length, query_tokens: queryTokens, reranked, total_ms: totalMs,
   }));
   return json(200, {
     ok: true,
-    model: VOYAGE_MODEL,
+    model: JINA_MODEL,
     fusion,
     query_tokens: queryTokens,
     candidates: { dense: denseCount, lexical: lexCount },
     evidence,
+    reranked,
     scope: notebookId
       ? { notebook_id: notebookId, document_count: allowedDocIds?.length ?? 0 }
       : { notebook_id: null, document_count: allowedDocIds ? allowedDocIds.length : null },
-    timings: { embed_ms: embedMs, retrieval_ms: retrievalMs, total_ms: totalMs },
+    timings: { embed_ms: embedMs, retrieval_ms: retrievalMs, rerank_ms: rerankMs, total_ms: totalMs },
   });
 });

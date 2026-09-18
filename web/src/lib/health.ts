@@ -17,7 +17,7 @@ import {
  *  - frontend   — this module is executing in the browser.
  *  - backend    — a live CORS preflight to the deployed `/ask` Edge Function.
  *  - database   — a real PostgREST read of `conversations` under RLS.
- *  - embeddings — a real `query-chunks` call (Voyage query embedding +
+ *  - embeddings — a real `query-chunks` call (Jina query embedding +
  *                 retrieval). The only check with a provider cost, so it is
  *                 cached the longest.
  *  - generation — derived from the outcome of the user's own `/ask` requests;

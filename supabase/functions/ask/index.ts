@@ -471,7 +471,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const tP0 = performance.now();
   const persistErr = await persistAssistant(answer, label, sources,
-    { answer_model: modelId, prompt: promptVersion, embedding: "voyage-4" },
+    { answer_model: modelId, prompt: promptVersion, embedding: "jina-embeddings-v5-text-small" },
     {
       retrieval_ms: retrievalMs, generation_ms: generationMs,
       total_ms: Math.round(performance.now() - t0),

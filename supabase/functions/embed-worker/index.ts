@@ -1,8 +1,12 @@
 // embed-worker — Phase 3A.1 production paced embedding worker.
 //
-// Cron-driven async embedding: each invocation claims ONE due job and embeds a
-// budgeted set of chunks in batched Voyage requests (B1), persists the vectors,
-// and exits. Progress is durable (embedding IS NULL scan); retries converge.
+// Cron-driven async embedding: each invocation claims ONE due job and embeds
+// budgeted passes of chunks in batched embedding requests (B1), persists the
+// vectors, and exits. One invocation may run up to MAX_PASSES_PER_INVOCATION
+// sequential passes over the SAME claimed job (D66 continuation) instead of
+// releasing it to the next cron tick; progress stays durable (embedding IS
+// NULL scan) so a killed invocation resumes exactly like a tick boundary and
+// retries converge.
 //
 // A registration that just persisted chunks can also trigger this worker
 // directly (ingest-pdf → POST { job_id } with the same x-worker-key): the
@@ -10,23 +14,30 @@
 // instead of waiting for the next cron tick. The cron sweep remains the
 // backstop — a failed or lost trigger changes nothing about recovery.
 //
-// Contract: voyage-4, input_type document, 1024-dim float. Every response is
+// Contract: jina-embeddings-v5-text-small, task retrieval.passage, 1024-dim
+// float, normalized. Every response is
 // validated (model exact, count exact, index mapping complete, all finite)
 // before persist — a malformed batch persists nothing. Never overwrites a
 // non-NULL embedding.
 //
-// Rate limiting: per tick, at most REQUESTS_PER_TICK Voyage requests carrying
+// Rate limiting: per pass, at most REQUESTS_PER_TICK Jina requests carrying
 // at most CHUNKS_PER_REQUEST chunks and MAX_CHARS_PER_REQUEST characters each,
-// sent sequentially with PACED_REQUEST_GAP_MS between them so a rolling minute
-// holds at most REQUESTS_PER_TICK requests. A per-tick token guard
-// (TICK_TOKEN_BUDGET) stops before breaching 10K TPM. Sized for the confirmed
-// Voyage Free Tier (3 RPM / 10K TPM) with margin; raise only after higher
-// provider limits are confirmed. No concurrency, no payment logic.
+// sent sequentially with PACED_REQUEST_GAP_MS between them (uniform gaps
+// within and across passes). A full two-pass invocation fits inside ~50 s, so
+// a rolling minute can hold up to all 6 of its requests (≈69K tokens worst
+// case vs the 100K TPM envelope). A per-pass token guard (PASS_TOKEN_BUDGET)
+// stops before breaching the shared account budget. Sized for the documented
+// Jina free envelope (100 RPM / 100K TPM, shared with reranking); raise only
+// after higher provider limits are confirmed.
+// No concurrency across jobs, no payment logic.
 //
 // Claiming (no new schema, no lock service): compare-and-swap on
 // ingest_jobs.attempts — read the oldest processing job, UPDATE only if
 // attempts is unchanged. A lost race exits idle. Combined with the
 // IS-NULL/ON-CONFLICT write guards, overlapping invocations stay safe.
+// CLAIM_IDLE_SECONDS exceeds the worst-case two-pass invocation so the cron
+// sweep does not steal a job mid-invocation (the direct trigger bypasses the
+// idle threshold by naming the parse-complete job explicitly).
 //
 // Auth: service-to-service shared secret (WORKER_CRON_KEY Edge secret,
 // x-worker-key header, timing-safe compare). verify_jwt is OFF for this
@@ -35,41 +46,68 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
+  EMBED_DIMENSIONS,
+  EMBED_MODEL,
+  EMBED_NORMALIZED,
+  EMBED_TASK_DOCUMENT,
   exceedsTokenBudget,
   parseBatchResponse,
   planBatches,
   type EmbedCandidate,
 } from "../_shared/embed-batch.ts";
 
-const MODEL = "voyage-4";
-const DIMENSIONS = 1024;
-const ENDPOINT = "https://api.voyageai.com/v1/embeddings";
+const MODEL = EMBED_MODEL;
+const DIMENSIONS = EMBED_DIMENSIONS;
+const TASK_DOCUMENT = EMBED_TASK_DOCUMENT;
+const ENDPOINT = "https://api.jina.ai/v1/embeddings";
 
-// Batched embedding budget (B1, 3 RPM pacing per the speed optimization).
-// Voyage accepts an array of inputs per request, so one request can carry many
-// chunks. These application budgets keep the worker inside the confirmed free
-// Voyage account limits (3 RPM / 10K TPM):
-//   12 chunks/request at ≈950 chars ≈ ≈2.8K tokens (hard cap 12K chars)
-//   3 sequential requests/tick, ~20 s apart → ≤ 3 requests in any rolling
-//   minute and ≤ ≈8.6K tokens/min ≈ 86% of the 10K TPM budget, with the
-//   per-tick token guard as a backstop. Query embeddings during ingestion
-//   share the same budget, hence the margin.
-// Voyage's own ceiling for voyage-4 is 1,000 inputs / 320K tokens per request —
+// Batched embedding budget (B1, paced per the speed optimization).
+// Jina accepts an array of inputs per request, so one request can carry many
+// chunks. These application budgets keep the worker inside the documented Jina
+// free envelope (100 RPM / 100K TPM, shared with reranking):
+//   48 chunks/request at ≈950 chars ≈ ≈11.5K tokens (hard cap 48K chars)
+//   3 sequential requests/pass, ~5 s apart → a full two-pass invocation (6
+//   requests) fits inside ~50 s, so a rolling minute can hold all 6: ≤ 6 RPM
+//   (≈6% of the envelope) and ≤ ≈69K tokens worst case vs 100K TPM, with the
+//   per-pass token guard as a backstop. A two-pass invocation spans ~50 s, so
+//   rolling-minute usage stays under ~70% of the TPM envelope even at the
+//   worst alignment. Query embeddings during ingestion share the budget,
+//   hence the remaining margin, and the pre-existing 429 path (stop, resume
+//   next invocation) remains the final backstop.
+// Jina's own per-input ceiling for v5-text-small is a 32K-token context —
 // far above these numbers, which protect the account limits, not the provider.
-const CHUNKS_PER_REQUEST = 12;
+const CHUNKS_PER_REQUEST = 48;
 const REQUESTS_PER_TICK = 3;
-const MAX_CHARS_PER_REQUEST = 12_000;
-const MAX_CHUNKS_PER_TICK = CHUNKS_PER_REQUEST * REQUESTS_PER_TICK;
-/** Sequential gap between this tick's Voyage requests (paced 3 RPM). */
-const PACED_REQUEST_GAP_MS = 20_000;
-/** This tick's own token contribution must stay under 10K TPM. */
-const TICK_TOKEN_BUDGET = 9_500;
+const MAX_CHARS_PER_REQUEST = 48_000;
+const MAX_CHUNKS_PER_PASS = CHUNKS_PER_REQUEST * REQUESTS_PER_TICK;
+/** Sequential gap between this invocation's embedding requests (paced). */
+const PACED_REQUEST_GAP_MS = 5_000;
+/** Each pass's own token contribution stays well under the shared TPM budget. */
+const PASS_TOKEN_BUDGET = 40_000;
+/**
+ * Bounded same-job continuation (D66): one invocation runs at most this many
+ * sequential passes over its claimed job. 2 passes × 144 chunks cover the
+ * 50–300-chunk company-document range in a single invocation (~50 s worst
+ * case); larger jobs still converge across invocations exactly as before.
+ */
+const MAX_PASSES_PER_INVOCATION = 2;
+/**
+ * Wall-clock continuation boundary: a second pass starts only within this
+ * budget of invocation start, keeping the worst case (~start + one full
+ * pass) inside plausible Edge execution limits. A killed invocation loses at
+ * most one in-flight batch — recovery is identical to a tick boundary.
+ */
+const PASS_START_BUDGET_MS = 100_000;
 
 // Only claim jobs idle longer than this (a freshly-touched job is being
-// worked or was just parsed; the next tick picks it up). Direct triggers
-// (ingest-pdf after durable chunk persistence) bypass this threshold by
-// naming the parse-complete job explicitly.
-const CLAIM_IDLE_SECONDS = 45;
+// worked or was just parsed; the next tick picks it up). Must exceed the
+// worst-case two-pass invocation (~50 s) so the cron sweep never steals a
+// job mid-invocation — the v33 overlap it replaces cost a wasted Jina request
+// per large document. Direct triggers (ingest-pdf after durable chunk
+// persistence) bypass this threshold by naming the parse-complete job
+// explicitly, so normal UX latency is unaffected; only genuinely stuck jobs
+// wait up to ~3.5 min for the cron backstop.
+const CLAIM_IDLE_SECONDS = 150;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -89,14 +127,19 @@ type Db = any;
 type ClaimedJob = { id: string; tenant_id: string; document_id: string; attempts: number };
 
 /**
- * One budgeted embedding pass over a claimed job's NULL chunks.
+ * Budgeted embedding passes over a claimed job's NULL chunks.
  *
- * Shared by the cron sweep and the direct post-parse trigger: at most
- * REQUESTS_PER_TICK sequential Voyage requests (≈20 s apart), each validated
- * whole-batch-before-write, each chunk written once behind the non-NULL
- * guard. Completion (document ready + job succeeded) happens in this same
- * pass when no NULL embeddings remain — no extra invocation is needed.
+ * Shared by the cron sweep and the direct post-parse trigger: each pass runs
+ * at most REQUESTS_PER_TICK sequential embedding requests (paced apart),
+ * each validated whole-batch-before-write, each chunk written once behind
+ * the non-NULL guard. A second pass over the SAME job starts only within the
+ * wall-clock budget and only after a clean first pass — otherwise the job
+ * keeps its durable state and the next invocation resumes it. Completion
+ * (document ready + job succeeded) happens in this same invocation when no
+ * NULL embeddings remain — no extra invocation is needed.
  */
+type BatchStat = { size: number; jina_ms: number; persist_ms: number; tokens: number };
+
 async function runEmbeddingPass(
   admin: Db,
   job: ClaimedJob,
@@ -107,121 +150,177 @@ async function runEmbeddingPass(
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-  // Next budgeted NULL chunks of THIS document only. One extra row tells us
-  // whether more work remains after this tick without a second query.
-  const { data: pending, error: listErr } = await admin.from("chunks")
-    .select("chunk_id, content")
-    .eq("document_id", job.document_id)
-    .eq("tenant_id", job.tenant_id)
-    .is("embedding", null)
-    .order("page", { ascending: true })
-    .order("chunk_id", { ascending: true })
-    .limit(MAX_CHUNKS_PER_TICK + 1);
-  if (listErr) return json(500, { ok: false, error: listErr.message });
-  const candidates = ((pending ?? []) as EmbedCandidate[])
-    .slice(0, MAX_CHUNKS_PER_TICK);
-
   let embedded = 0;
-  let voyageRequests = 0;
+  let embedRequests = 0;
   let http429 = 0;
-  let totalTokens = 0;
   let failedThisTick = 0;
+  let passes = 0;
   let stopped = "";
+  const batchStats: BatchStat[] = [];
 
-  // Blank content can never be embedded. Record it and leave the row NULL —
-  // the same behaviour as before batching (no request is sent for it).
-  const embeddable: EmbedCandidate[] = [];
-  for (const row of candidates) {
-    if (!row.content || !row.content.trim()) {
-      failedThisTick++;
-      continue;
-    }
-    embeddable.push(row);
-  }
-
-  const batches = planBatches(embeddable, {
-    maxChunks: CHUNKS_PER_REQUEST,
-    maxChars: MAX_CHARS_PER_REQUEST,
-    maxBatches: REQUESTS_PER_TICK,
-  });
-
-  for (let b = 0; b < batches.length; b++) {
-    const batch = batches[b];
-    if (b > 0) {
-      // Paced sequential cadence: this tick's requests land ~20 s apart, so a
-      // rolling 60 s window holds at most REQUESTS_PER_TICK of them.
-      await sleep(PACED_REQUEST_GAP_MS);
-      if (exceedsTokenBudget(totalTokens, batch.map((row) => row.content), TICK_TOKEN_BUDGET)) {
-        stopped = "tpm budget; resumes next tick";
-        break;
-      }
-    }
-    voyageRequests++;
-    let raw: unknown;
-    try {
-      const r = await fetch(ENDPOINT, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input: batch.map((row) => row.content),
-          model: MODEL,
-          input_type: "document",
-          output_dimension: DIMENSIONS,
-        }),
-      });
-      if (r.status === 429) {
-        http429++;
-        failedThisTick += batch.length;
-        stopped = "rate_limited_429";
-        break;
-      }
-      if (!r.ok) {
-        failedThisTick += batch.length;
-        const transient = r.status >= 500;
-        stopped = transient
-          ? `transient voyage status ${r.status}`
-          : `fatal voyage status ${r.status}`;
-        break;
-      }
-      raw = await r.json();
-    } catch (e) {
-      failedThisTick += batch.length;
-      stopped = "transient request failure";
-      log({
-        tick: "batch_failed", job_id: job.id, batch_size: batch.length,
-        error: (e instanceof Error ? e.message : String(e)).slice(0, 120),
-      });
+  while (passes < MAX_PASSES_PER_INVOCATION && stopped === "") {
+    if (passes > 0 && performance.now() - t0 > PASS_START_BUDGET_MS) {
+      stopped = "pass budget; resumes next tick";
       break;
     }
+    // Next budgeted NULL chunks of THIS document only. One extra row tells us
+    // whether more work remains after this pass without a second query.
+    // Re-read every pass so a concurrent worker's progress is picked up and
+    // never overwritten (the per-row NULL guard makes overlap a no-op).
+    const { data: pending, error: listErr } = await admin.from("chunks")
+      .select("chunk_id, content")
+      .eq("document_id", job.document_id)
+      .eq("tenant_id", job.tenant_id)
+      .is("embedding", null)
+      .order("page", { ascending: true })
+      .order("chunk_id", { ascending: true })
+      .limit(MAX_CHUNKS_PER_PASS + 1);
+    if (listErr) return json(500, { ok: false, error: listErr.message });
+    const candidates = ((pending ?? []) as EmbedCandidate[])
+      .slice(0, MAX_CHUNKS_PER_PASS);
+    if (candidates.length === 0) break;
 
-    // Validate the WHOLE batch before persisting anything: a malformed or
-    // partial response must never mark chunks as embedded.
-    const parsed = parseBatchResponse(raw, batch.length);
-    if (!parsed.ok) {
-      failedThisTick += batch.length;
-      stopped = parsed.reason;
-      break;
+    // Blank content can never be embedded. Record it and leave the row NULL —
+    // the same behaviour as before batching (no request is sent for it).
+    const embeddable: EmbedCandidate[] = [];
+    for (const row of candidates) {
+      if (!row.content || !row.content.trim()) {
+        failedThisTick++;
+        continue;
+      }
+      embeddable.push(row);
     }
-    totalTokens += parsed.tokens;
 
-    for (let i = 0; i < batch.length; i++) {
-      const row = batch[i];
-      const { error: upErr } = await admin.from("chunks")
-        .update({ embedding: parsed.vectors[i] })
-        .eq("chunk_id", row.chunk_id)
-        .is("embedding", null);
-      if (upErr) {
-        failedThisTick += batch.length - i;
+    const batches = planBatches(embeddable, {
+      maxChunks: CHUNKS_PER_REQUEST,
+      maxChars: MAX_CHARS_PER_REQUEST,
+      maxBatches: REQUESTS_PER_TICK,
+    });
+
+    // Per-pass token budget: each pass contributes at most ~3 requests
+    // (≈35K tokens) guarded here; a full two-pass invocation fits inside
+    // ~50 s, so the rolling-minute worst case is all 6 requests (≈69K
+    // tokens) — still under the shared TPM envelope (see budget comment).
+    let passTokens = 0;
+    for (let b = 0; b < batches.length; b++) {
+      const batch = batches[b];
+      if (b > 0 || passes > 0) {
+        // Paced sequential cadence: this invocation's requests land
+        // PACED_REQUEST_GAP_MS apart (plus ~2–4 s of request+persist work),
+        // so bursts stay ordered and far below the RPM envelope.
+        await sleep(PACED_REQUEST_GAP_MS);
+        if (exceedsTokenBudget(passTokens, batch.map((row) => row.content), PASS_TOKEN_BUDGET)) {
+          stopped = "tpm budget; resumes next tick";
+          break;
+        }
+      }
+      embedRequests++;
+      const jinaStart = performance.now();
+      let raw: unknown;
+      try {
+        const r = await fetch(ENDPOINT, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            input: batch.map((row) => row.content),
+            model: MODEL,
+            task: TASK_DOCUMENT,
+            dimensions: DIMENSIONS,
+            normalized: true,
+            embedding_type: "float",
+          }),
+        });
+        if (r.status === 429) {
+          http429++;
+          failedThisTick += batch.length;
+          stopped = "rate_limited_429";
+          break;
+        }
+        if (!r.ok) {
+          failedThisTick += batch.length;
+          const transient = r.status >= 500;
+          stopped = transient
+            ? `transient provider status ${r.status}`
+            : `fatal provider status ${r.status}`;
+          break;
+        }
+        raw = await r.json();
+      } catch (e) {
+        failedThisTick += batch.length;
+        stopped = "transient request failure";
+        log({
+          tick: "batch_failed", job_id: job.id, batch_size: batch.length,
+          error: (e instanceof Error ? e.message : String(e)).slice(0, 120),
+        });
+        break;
+      }
+      const jinaMs = Math.round(performance.now() - jinaStart);
+
+      // Validate the WHOLE batch before persisting anything: a malformed or
+      // partial response must never mark chunks as embedded.
+      const parsed = parseBatchResponse(raw, batch.length);
+      if (!parsed.ok) {
+        failedThisTick += batch.length;
+        stopped = parsed.reason;
+        break;
+      }
+      passTokens += parsed.tokens;
+
+      // Bounded parallel persist: at most one batch (≤ CHUNKS_PER_REQUEST
+      // rows) in flight. Same single-row UPDATE with the same non-NULL guard
+      // per chunk as the old sequential loop — only the awaiting is
+      // concurrent, so tenant scoping, ownership, CAS and retry semantics are
+      // unchanged. Supavisor absorbs the burst; statements are single-row.
+      const persistStart = performance.now();
+      const outcomes = await Promise.all(batch.map((row, i) =>
+        admin.from("chunks")
+          .update({ embedding: parsed.vectors[i] })
+          .eq("chunk_id", row.chunk_id)
+          .is("embedding", null)
+          .then(
+            ({ error: upErr }: { error: { message?: string } | null }) => ({
+              ok: !upErr,
+              detail: upErr?.message ?? "",
+            }),
+            (error: unknown) => ({
+              ok: false,
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          )
+      ));
+      const persistMs = Math.round(performance.now() - persistStart);
+      batchStats.push({ size: batch.length, jina_ms: jinaMs, persist_ms: persistMs, tokens: parsed.tokens });
+      let persistFailed = 0;
+      for (const outcome of outcomes) {
+        if (outcome.ok) {
+          embedded++;
+        } else {
+          persistFailed++;
+          if (persistFailed === 1) {
+            log({
+              tick: "persist_failed", job_id: job.id, batch_size: batch.length,
+              error: outcome.detail.slice(0, 120),
+            });
+          }
+        }
+      }
+      if (persistFailed > 0) {
+        failedThisTick += persistFailed;
         stopped = "persist failure";
         break;
       }
-      embedded++;
     }
-    if (stopped !== "") break;
+    passes++;
   }
 
-  const fatal = stopped !== "" && stopped !== "rate_limited_429" && !stopped.startsWith("transient") && stopped !== "tpm budget; resumes next tick";
-  if (fatal) {
+  // Resumable stops resume on a later invocation; anything else is fatal to
+  // the job. Stops ending in "resumes next tick" are budget/deferral stops
+  // (per-pass TPM guard, pass continuation boundary) — same class as the
+  // pre-existing TPM stop, just reachable from either pass.
+  const resumable = stopped === "rate_limited_429" ||
+    stopped.startsWith("transient") ||
+    stopped.endsWith("resumes next tick");
+  if (stopped !== "" && !resumable) {
     await admin.from("ingest_jobs").update({
       status: "failed",
       last_error: `embedding worker fatal: ${stopped}`,
@@ -243,42 +342,46 @@ async function runEmbeddingPass(
     .is("embedding", null);
   const left = remaining ?? 0;
   if (left === 0) {
-    await admin.from("documents").update({ status: "ready", embedding_model: "voyage-4" })
+    await admin.from("documents").update({ status: "ready", embedding_model: MODEL })
       .eq("id", job.document_id).eq("tenant_id", job.tenant_id);
     await admin.from("ingest_jobs").update({ status: "succeeded", last_error: null }).eq("id", job.id);
     log({
       tick: "completed", job_id: job.id, tenant_id: job.tenant_id,
       document_id: job.document_id, embedded_this_tick: embedded,
-      voyage_requests: voyageRequests, total_tokens: totalTokens,
-      failed_this_tick: failedThisTick,
+      embedding_requests: embedRequests, total_tokens: batchStats.reduce((sum, s) => sum + s.tokens, 0),
+      failed_this_tick: failedThisTick, passes_executed: passes,
+      batches: batchStats,
     });
     return json(200, {
       ok: true, completed: true, job_id: job.id, document_id: job.document_id,
-      embedded_this_tick: embedded, voyage_requests: voyageRequests,
-      http_429: http429, total_tokens: totalTokens,
-      failed_this_tick: failedThisTick,
+      embedded_this_tick: embedded, embedding_requests: embedRequests,
+      http_429: http429, total_tokens: batchStats.reduce((sum, s) => sum + s.tokens, 0),
+      failed_this_tick: failedThisTick, passes_executed: passes,
+      batches: batchStats,
       total_ms: Math.round(performance.now() - t0),
     });
   }
 
   await admin.from("ingest_jobs").update({
     last_error: stopped === "rate_limited_429"
-      ? "voyage 429 rate-limited; resumes next tick"
+      ? "rate limited (429); resumes next tick"
       : stopped !== "" ? `embedding worker: ${stopped}; resumes next tick` : null,
   }).eq("id", job.id);
   log({
     tick: "progress", job_id: job.id, tenant_id: job.tenant_id,
     embedded_this_tick: embedded, remaining_null: left,
-    voyage_requests: voyageRequests, http_429: http429,
-    failed_this_tick: failedThisTick,
+    embedding_requests: embedRequests, http_429: http429,
+    failed_this_tick: failedThisTick, passes_executed: passes,
+    batches: batchStats,
     stopped: stopped || "budget exhausted",
   });
   return json(200, {
     ok: true, completed: false, job_id: job.id, document_id: job.document_id,
     embedded_this_tick: embedded, remaining_null: left,
-    voyage_requests: voyageRequests, http_429: http429,
-    stopped: stopped || "budget exhausted", total_tokens: totalTokens,
-    failed_this_tick: failedThisTick,
+    embedding_requests: embedRequests, http_429: http429,
+    stopped: stopped || "budget exhausted", total_tokens: batchStats.reduce((sum, s) => sum + s.tokens, 0),
+    failed_this_tick: failedThisTick, passes_executed: passes,
+    batches: batchStats,
     total_ms: Math.round(performance.now() - t0),
   });
 }
@@ -300,8 +403,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     Deno.env.get("SUPABASE_URL") ?? "",
     Deno.env.get("SUPABASE_ANON_KEY") ?? "",
   );
-  const apiKey = Deno.env.get("VOYAGE_API_KEY") ?? "";
-  if (!apiKey) return json(500, { ok: false, error: "VOYAGE_API_KEY not configured" });
+  const apiKey = Deno.env.get("JINA_API_KEY") ?? "";
+  if (!apiKey) return json(500, { ok: false, error: "JINA_API_KEY not configured" });
 
   // NOTE: the worker acts as the platform scheduler here, not as a tenant
   // user: it reads/writes only the single claimed job's rows, scoped by the

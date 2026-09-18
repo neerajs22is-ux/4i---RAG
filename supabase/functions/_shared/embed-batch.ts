@@ -1,17 +1,21 @@
 // Batched embedding helpers (B1).
 //
-// Voyage accepts an array of inputs per request. Batching raises ingestion
-// throughput without touching the model, the dimensions, the input_type, the
+// Jina accepts an array of inputs per request. Batching raises ingestion
+// throughput without touching the model, the dimensions, the input task, the
 // stored vector or the chunking — it only changes how many chunks travel in
 // one request. Both functions are pure so they can be unit tested without a
 // provider call.
 //
-// Provider envelope (docs.voyageai.com, voyage-4): up to 1,000 inputs and
-// 320K tokens per request. The application budget is far tighter (free-tier
-// 3 RPM / 10K TPM), so the caller passes explicit per-request budgets.
+// Provider envelope (api.jina.ai, jina-embeddings-v5-text-small): task-selected
+// embeddings with an OpenAI-style data/index/usage envelope. The application
+// budget is far tighter than the provider envelope, so the caller passes
+// explicit per-request budgets.
 
-export const EMBED_MODEL = "voyage-4";
+export const EMBED_MODEL = "jina-embeddings-v5-text-small";
 export const EMBED_DIMENSIONS = 1024;
+export const EMBED_TASK_DOCUMENT = "retrieval.passage";
+export const EMBED_TASK_QUERY = "retrieval.query";
+export const EMBED_NORMALIZED = true;
 
 export type EmbedCandidate = { chunk_id: string; content: string };
 
@@ -96,7 +100,7 @@ export function exceedsTokenBudget(
 ): boolean {
   return usedTokens + estimateBatchTokens(batchContents) > budgetTokens;
 }/**
- * Validate a Voyage embeddings response for one batch and map it back to the
+ * Validate a Jina embeddings response for one batch and map it back to the
  * request order.
  *
  * Strict by design: unless every entry is present, correctly indexed and a
@@ -119,7 +123,7 @@ export function parseBatchResponse(
   if (!parsed || typeof parsed !== "object") {
     return { ok: false, reason: "malformed response body (fatal)" };
   }
-  if (parsed.model !== EMBED_MODEL) {
+  if ("model" in parsed && parsed.model !== undefined && parsed.model !== EMBED_MODEL) {
     return { ok: false, reason: "model mismatch (fatal)" };
   }
 
