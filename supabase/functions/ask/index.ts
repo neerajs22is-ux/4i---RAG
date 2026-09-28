@@ -22,6 +22,30 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
 import { combineScopes } from "../_shared/temp-scope.ts";
 import { routePreRag } from "../_shared/pre-rag-router.ts";
+import { classifyFollowUp } from "../_shared/follow-up-detector.ts";
+import {
+  callRewriteModel,
+  planRewrite,
+  resolveRetrievalQuery,
+} from "../_shared/query-rewrite.ts";
+import {
+  CONTEXT_HISTORY_LIMIT,
+  summarizeConversationContext,
+} from "../_shared/conversation-context.ts";
+import {
+  buildTelemetry,
+  checkerTelemetry,
+  contextTelemetry,
+  evidenceTelemetry,
+  generationTelemetry,
+  rewriteTelemetry,
+  zeroEmbedding,
+  zeroRerank,
+  zeroRewrite,
+  type EmbeddingTelemetry,
+  type RerankTelemetry,
+  type RewriteTelemetry,
+} from "../_shared/usage-telemetry.ts";
 import {
   aggregateCorrectness,
   evaluateAnswer,
@@ -165,6 +189,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const tRo0 = performance.now();
   const route = routePreRag(query);
   const routerMs = Math.round(performance.now() - tRo0);
+  // H2B telemetry: the router section is shared by every response path.
+  const routerTelemetry = {
+    classification: route.classification,
+    bypassed: route.classification === "CONVERSATIONAL",
+    latency_ms: routerMs,
+  };
   const routerInfo = (bypassed: boolean) => ({
     classification: route.classification,
     bypassed,
@@ -177,30 +207,85 @@ Deno.serve(async (req: Request): Promise<Response> => {
     router_ms: routerMs,
   }));
   if (route.classification === "CONVERSATIONAL" && route.response !== null) {
+    // No provider work happens on this path: every downstream section is a
+    // deterministic zero, never a fabricated usage number. The context layer
+    // also does not run here (H1 bypass stays the cheapest path).
+    const telemetry = buildTelemetry({ router: routerTelemetry });
     const persistErr = await persistAssistant(
       route.response, "conversational", [], { prompt: null },
-      { router_ms: routerMs, total_ms: Math.round(performance.now() - t0) }, null,
+      { router_ms: routerMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
     );
     return json(200, {
       ok: true, answer: route.response, label: "conversational",
       citations: [], evidence_count: 0, grounded: null, conversation_id: convId,
       router: routerInfo(true),
+      telemetry,
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
     });
   }
+
+  // H3A conversation-context layer: one bounded read of the most recent
+  // messages plus a deterministic follow-up classification. This is
+  // telemetry-only in H3A — nothing below consults it, and the RAG path
+  // (scope, retrieval, gate, generation) is unchanged. Precedence with the
+  // clarification gate: clarification remains the response authority; the
+  // context signal is recorded alongside it and never produces a second
+  // response or a different question.
+  const tCtx0 = performance.now();
+  let contextRead = summarizeConversationContext([]);
+  if (priorCount > 0) {
+    const { data: recent, error: ctxErr } = await db.from("messages")
+      .select("role, content, sources")
+      .eq("conversation_id", convId)
+      .order("created_at", { ascending: false })
+      .limit(CONTEXT_HISTORY_LIMIT);
+    if (ctxErr) {
+      // Context is an enhancement, never a failure source: fall back to an
+      // empty window and continue on the unchanged path.
+      console.log(JSON.stringify({
+        fn: "ask", caller, tenant_id: tenantId, path: "context-read-failed",
+        error: ctxErr.message.slice(0, 160),
+      }));
+    } else {
+      contextRead = summarizeConversationContext(recent);
+    }
+  }
+  const followUpClass = classifyFollowUp({
+    message: query,
+    hasPreviousTurn: priorCount > 0,
+  });
+  const contextMs = Math.round(performance.now() - tCtx0);
+  const contextPart = contextTelemetry({
+    used: contextRead.previousMessageAvailable,
+    classification: followUpClass,
+    historyTurnsRead: contextRead.historyTurnsRead,
+    previousMessageAvailable: contextRead.previousMessageAvailable,
+    priorEvidenceAvailable: contextRead.priorEvidenceAvailable,
+    latencyMs: contextMs,
+  });
+  console.log(JSON.stringify({
+    fn: "ask", caller, tenant_id: tenantId, path: "context",
+    classification: followUpClass,
+    history_turns_read: contextRead.historyTurnsRead,
+    previous_message_available: contextRead.previousMessageAvailable,
+    prior_evidence_available: contextRead.priorEvidenceAvailable,
+    context_ms: contextMs,
+  }));
 
   // 1. Bounded deterministic clarification gate (no LLM, no loops).
   const { count: docCount } = await db.from("documents")
     .select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
   const clar = clarificationTrigger(query, priorCount, docCount ?? 0);
   if (clar.needed) {
-    const persistErr = await persistAssistant(clar.question, "clarification", [], { prompt: null }, { total_ms: Math.round(performance.now() - t0) }, null);
+    const telemetry = buildTelemetry({ router: routerTelemetry, context: contextPart });
+    const persistErr = await persistAssistant(clar.question, "clarification", [], { prompt: null }, { total_ms: Math.round(performance.now() - t0), telemetry }, null);
     console.log(JSON.stringify({ fn: "ask", caller, tenant_id: tenantId, path: "clarification", reason: clar.reason }));
     return json(200, {
       ok: true, answer: clar.question, label: "clarification",
       citations: [], evidence_count: 0, grounded: null, conversation_id: convId,
       router: routerInfo(false),
+      telemetry,
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
     });
@@ -255,9 +340,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // Fires only when a notebook scope was requested AND nothing resolved —
   // neither persistent sources nor conversation temporaries.
   if (combined.refused) {
+    const telemetry = buildTelemetry({ router: routerTelemetry, context: contextPart });
     const persistErr = await persistAssistant(
       REFUSAL_TEXT, "insufficient", [],
-      { prompt: null }, { retrieval_ms: 0, total_ms: Math.round(performance.now() - t0) }, null,
+      { prompt: null }, { retrieval_ms: 0, total_ms: Math.round(performance.now() - t0), telemetry }, null,
     );
     console.log(JSON.stringify({
       fn: "ask", caller, tenant_id: tenantId, path: "refusal",
@@ -270,22 +356,95 @@ Deno.serve(async (req: Request): Promise<Response> => {
       gate: { verdict: "INSUFFICIENT", reason: "no-selected-sources", conflicting: [] },
       grounded: null, conversation_id: convId,
       router: routerInfo(false),
+      telemetry,
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
       scope: { notebook_id: notebookId, document_count: 0 },
     });
   }
 
+  // 1d. H3B bounded follow-up rewrite — at most ONE model call, only for
+  // FOLLOW_UP turns whose retrieval query genuinely needs the previous
+  // question, and only when retrieval is actually about to run. The rewrite
+  // is a RETRIEVAL query only: `query` (the original user question) remains
+  // authoritative for the gate, generation, citations, and persistence.
+  // Failure, timeout, or invalid output falls back to the original query with
+  // no retry. Placed after the empty-scope refusal so no model call is spent
+  // when no retrieval would happen.
+  let retrievalQuery = query;
+  let rewritePart: RewriteTelemetry = zeroRewrite();
+  {
+    const plan = planRewrite({
+      classification: followUpClass,
+      currentQuery: query,
+      previousUserQuestion: contextRead.previousUserQuestion,
+    });
+    if (plan.eligible) {
+      const rewriteModelId = Deno.env.get("ANSWER_MODEL_ID") ?? "";
+      const rewriteKey = Deno.env.get("MANTLE_API_KEY") ?? "";
+      if (rewriteModelId && rewriteKey) {
+        const resolution = await resolveRetrievalQuery({
+          classification: followUpClass,
+          currentQuery: query,
+          previousUserQuestion: contextRead.previousUserQuestion,
+          modelId: rewriteModelId,
+          callModel: (prompt) => callRewriteModel({
+            url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
+            apiKey: rewriteKey,
+            model: rewriteModelId,
+            prompt,
+          }),
+        });
+        retrievalQuery = resolution.retrievalQuery;
+        rewritePart = resolution.rewrite;
+      } else {
+        rewritePart = rewriteTelemetry({
+          attempted: false, applied: false, fallback: false, reason: "model-unavailable",
+          inputChars: 0, outputChars: 0, latencyMs: 0, modelId: null,
+          inputTokens: null, outputTokens: null,
+        });
+      }
+    } else {
+      rewritePart = rewriteTelemetry({
+        attempted: false, applied: false, fallback: false, reason: plan.reason,
+        inputChars: 0, outputChars: 0, latencyMs: 0, modelId: null,
+        inputTokens: null, outputTokens: null,
+      });
+    }
+    console.log(JSON.stringify({
+      fn: "ask", caller, tenant_id: tenantId, path: "rewrite",
+      attempted: rewritePart.attempted,
+      applied: rewritePart.applied,
+      fallback: rewritePart.fallback,
+      reason: rewritePart.reason,
+      input_chars: rewritePart.input_chars,
+      output_chars: rewritePart.output_chars,
+      rewrite_ms: rewritePart.latency_ms,
+    }));
+  }
+  // Context telemetry for every path after the rewrite: `used` means the
+  // context layer actually influenced retrieval (a validated rewrite applied).
+  const contextPartFinal = {
+    ...contextPart,
+    used: rewritePart.applied,
+    rewrite: rewritePart,
+  };
+
   // 2. Retrieve evidence through the existing mechanism (reused, not copied).
+  // Retrieval receives the rewritten query when one was applied; the original
+  // user question is never replaced anywhere in this handler.
   const tR0 = performance.now();
   let retrieved: EvidenceItem[];
   let retrievalTokens = 0;
+  let qcEmbedding: EmbeddingTelemetry | null = null;
+  let qcRerank: (RerankTelemetry & { fused_candidates: number }) | null = null;
+  let qcCandidates: { dense: number; lexical: number } | null = null;
   try {
     const r = await fetch(`${supabaseUrl}/functions/v1/query-chunks`, {
       method: "POST",
       headers: { apikey: anonKey, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        tenant_id: tenantId, query,
+        tenant_id: tenantId, query: retrievalQuery,
         ...(combined.ids ? { document_ids: combined.ids } : {}),
       }),
     });
@@ -295,14 +454,46 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
     const rj = await r.json() as {
       ok?: boolean; error?: string; evidence?: EvidenceItem[]; query_tokens?: number;
+      candidates?: { dense: number; lexical: number } | null;
+      rerank?: (RerankTelemetry & { fused_candidates: number }) | null;
+      embedding?: EmbeddingTelemetry | null;
     };
     if (!rj.ok) return json(502, { ok: false, error: `retrieval failed: ${String(rj.error ?? "unknown").slice(0, 200)}` });
     retrieved = rj.evidence ?? [];
     retrievalTokens = rj.query_tokens ?? 0;
+    qcCandidates = rj.candidates ?? null;
+    qcRerank = rj.rerank ?? null;
+    qcEmbedding = rj.embedding ?? null;
   } catch (e) {
     return json(502, { ok: false, error: `retrieval failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` });
   }
   const retrievalMs = Math.round(performance.now() - tR0);
+
+  // H2A observability: structural retrieval trace. This path performs exactly
+  // ONE retrieval round and has no expansion/retry by construction — H3B adds
+  // at most one rewrite, which replaces the retrieval query but does not add
+  // a retrieval. The counts make that invariant measurable per request.
+
+  const retrievalTrace = {
+    rounds: 1,
+    expansions: 0,
+    rerank: qcRerank,
+  };
+
+  // H2B telemetry: retrieval sections, straight from the query-chunks
+  // accounting (measured provider usage, labeled estimates, calculated zeros).
+  const telemetrySections = {
+    retrieval: {
+      rounds: 1,
+      dense_count: qcCandidates?.dense ?? 0,
+      lexical_count: qcCandidates?.lexical ?? 0,
+      fused_count: qcRerank?.fused_candidates ?? retrieved.length,
+      final_evidence_count: retrieved.length,
+    },
+    embedding: qcEmbedding ?? zeroEmbedding(),
+    rerank: qcRerank ?? zeroRerank(),
+    evidence: evidenceTelemetry(retrieved.map((e) => e.content)),
+  };
 
   // 3. Deterministic sufficiency gate (model-free).
   const gate = verifyEvidence(query, retrieved);
@@ -315,9 +506,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // 4. INSUFFICIENT (incl. empty): refusal without any model call.
   if (mode === "refuse") {
+    const telemetry = buildTelemetry({ router: routerTelemetry, context: contextPartFinal, ...telemetrySections });
     const persistErr = await persistAssistant(
       REFUSAL_TEXT, "insufficient", sources,
-      { prompt: null }, { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+      { prompt: null }, { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
     );
     console.log(JSON.stringify({
       fn: "ask", caller, tenant_id: tenantId, path: "refusal",
@@ -329,6 +521,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       gate: { verdict: gate.verdict, reason: gate.reason },
       grounded: null, conversation_id: convId,
       router: routerInfo(false),
+      retrieval: retrievalTrace,
+      telemetry,
       persisted: persistErr === null,
       ...(persistErr ? { persistence_error: persistErr } : {}),
       ...(notebookId ? { scope: { notebook_id: notebookId, document_count: (combined.ids ?? scopedDocIds ?? []).length } } : {}),
@@ -367,6 +561,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     });
     if (!r.ok) {
       const mapped = mapMantleFailure(r.status, await r.text());
+      const failedGenerationMs = Math.round(performance.now() - tG0);
+      const telemetry = buildTelemetry({
+        router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+        generation: generationTelemetry({ calls: 1, inputTokens: null, outputTokens: null, latencyMs: failedGenerationMs }),
+      });
       console.log(JSON.stringify({
         fn: "ask", caller, tenant_id: tenantId, path: "provider-failure",
         model: modelId, failure: mapped.kind, status: mapped.status,
@@ -375,27 +574,37 @@ Deno.serve(async (req: Request): Promise<Response> => {
         `The answer model is currently unavailable (${modelId}). Please try again shortly.`,
         "provider-error", sources,
         { answer_model: modelId, prompt: promptVersion },
-        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
       );
-      if (mapped.kind === "throttled") return json(429, { ok: false, error: mapped.message });
-      if (mapped.kind === "auth") return json(502, { ok: false, error: mapped.message });
-      return json(502, { ok: false, error: mapped.message });
+      if (mapped.kind === "throttled") return json(429, { ok: false, error: mapped.message, telemetry });
+      if (mapped.kind === "auth") return json(502, { ok: false, error: mapped.message, telemetry });
+      return json(502, { ok: false, error: mapped.message, telemetry });
     }
     const parsed = parseMantleResponse(await r.json());
     if (!parsed.ok) {
+      const failedGenerationMs = Math.round(performance.now() - tG0);
+      const telemetry = buildTelemetry({
+        router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+        generation: generationTelemetry({ calls: 1, inputTokens: null, outputTokens: null, latencyMs: failedGenerationMs }),
+      });
       await persistAssistant(
         "The model returned an invalid response. Please try again.",
         "provider-error", sources,
         { answer_model: modelId, prompt: promptVersion },
-        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
       );
-      return json(502, { ok: false, error: parsed.error });
+      return json(502, { ok: false, error: parsed.error, telemetry });
     }
     rawAnswer = parsed.text;
     inputTokens = parsed.inputTokens;
     outputTokens = parsed.outputTokens;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const failedGenerationMs = Math.round(performance.now() - tG0);
+    const telemetry = buildTelemetry({
+      router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+      generation: generationTelemetry({ calls: 1, inputTokens: null, outputTokens: null, latencyMs: failedGenerationMs }),
+    });
     console.log(JSON.stringify({
       fn: "ask", caller, tenant_id: tenantId, path: "provider-failure",
       model: modelId, failure: "transport", error: msg.slice(0, 200),
@@ -404,23 +613,28 @@ Deno.serve(async (req: Request): Promise<Response> => {
       `The answer model is currently unavailable (${modelId}). Please try again shortly.`,
       "provider-error", sources,
       { answer_model: modelId, prompt: promptVersion },
-      { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0) }, null,
+      { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
     );
     return json(502, {
       ok: false,
       error: `answer generation failed (model ${modelId}). Check model access and configuration, then retry.`,
+      telemetry,
     });
   }
   const generationMs = Math.round(performance.now() - tG0);
   const answer = stripThink(rawAnswer);
   if (!answer) {
+    const telemetry = buildTelemetry({
+      router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+      generation: generationTelemetry({ calls: 1, inputTokens, outputTokens, latencyMs: generationMs }),
+    });
     await persistAssistant(
       "The model returned an empty response. Please try again.",
       "provider-error", sources,
       { answer_model: modelId, prompt: promptVersion },
-      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0) }, null,
+      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
     );
-    return json(502, { ok: false, error: "model returned an empty response" });
+    return json(502, { ok: false, error: "model returned an empty response", telemetry });
   }
 
   // 6. Deterministic citation guard (hard failure, never silent).
@@ -428,16 +642,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const guard = validateCitations(answer, retrieved, tenantId);
   const citationGuardMs = Math.round(performance.now() - tC0);
   if (!guard.ok) {
+    const telemetry = buildTelemetry({
+      router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+      generation: generationTelemetry({ calls: 1, inputTokens, outputTokens, latencyMs: generationMs }),
+    });
     await persistAssistant(answer, "invalid", sources,
       { answer_model: modelId, prompt: promptVersion },
-      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0) }, false);
+      { retrieval_ms: retrievalMs, generation_ms: generationMs, total_ms: Math.round(performance.now() - t0), telemetry }, false);
     console.log(JSON.stringify({
       fn: "ask", caller, tenant_id: tenantId, path: "citation-invalid",
       errors: guard.errors,
     }));
     return json(502, {
       ok: false, error: "answer failed citation validation",
-      errors: guard.errors, conversation_id: convId,
+      errors: guard.errors, conversation_id: convId, telemetry,
     });
   }
 
@@ -521,6 +739,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   const tP0 = performance.now();
+  // H2B: the turn's full accounting, built from the measured/estimated
+  // sections above plus the generation and (optional) checker calls.
+  const telemetry = buildTelemetry({
+    router: routerTelemetry,
+    context: contextPartFinal,
+    ...telemetrySections,
+    generation: generationTelemetry({ calls: 1, inputTokens, outputTokens, latencyMs: generationMs }),
+    checker: checkerTelemetry({
+      calls: correctness.invoked ? correctness.attempts : 0,
+      outputTokens: correctness.output_tokens,
+      latencyMs: correctness.latency_ms,
+    }),
+  });
   const persistErr = await persistAssistant(answer, label, sources,
     { answer_model: modelId, prompt: promptVersion, embedding: "jina-embeddings-v5-text-small" },
     {
@@ -531,6 +762,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       ...(correctnessVerdict !== null
         ? { correctness_verdict: correctnessVerdict, correctness_ms: correctnessMs }
         : {}),
+      telemetry,
     }, trip.grounded);
   const persistenceMs = Math.round(performance.now() - tP0);
   console.log(JSON.stringify({
@@ -548,6 +780,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     correctness,
     grounded: trip.grounded, grounding_note: groundingNote,
     router: routerInfo(false),
+    retrieval: retrievalTrace,
+    telemetry,
     timings: {
       retrieval_ms: retrievalMs, generation_ms: generationMs,
       citation_guard_ms: citationGuardMs, tripwire_ms: tripwireMs,

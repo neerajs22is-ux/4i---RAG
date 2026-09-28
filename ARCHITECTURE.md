@@ -62,6 +62,7 @@ POST /functions/v1/ask  { tenant_id, query (≤1000 chars), conversation_id? }
  → conversation: verify or create
  → pre-RAG router (H1)                  (deterministic; CONVERSATIONAL → fixed
                                          reply, no embedding/retrieval/gate/LLM)
+ → conversation context (H3A)            (bounded read + FOLLOW_UP detect, telemetry)
  → clarification gate                   (deterministic; no LLM)
  → retrieval  (internal call to query-chunks)
  → evidence gate (verifyEvidence)
@@ -71,10 +72,25 @@ POST /functions/v1/ask  { tenant_id, query (≤1000 chars), conversation_id? }
  → citation guard                       (hard 502 on failure)
  → groundedness tripwire                (downgrade-only)
  → answer-correctness checker           (flag-gated, advisory)
- → deterministic aggregation
- → persist user+assistant messages
- → JSON response (+ bounded diagnostics)
+  → deterministic aggregation
+  → persist user+assistant messages
+  → JSON response (+ bounded diagnostics + per-turn `telemetry`)
 ```
+
+**Per-turn telemetry (H2B, D70).** Every `ask` response carries a
+`telemetry` object with router / retrieval / embedding / rerank / evidence /
+generation / checker sections; the same object is persisted inside
+`messages.timings.telemetry` (no schema change, caller-JWT RLS unchanged).
+Every token number is `{ value, basis }` with basis
+`measured` (provider-reported: Jina embed and rerank `usage.total_tokens`,
+Mantle `prompt_tokens`/`completion_tokens`), `calculated` (deterministic
+zeros for work not performed), `estimated` (chars/4, the only proxy), or
+`unknown` (unavailable — never fabricated, never coerced to 0). Counts and
+sizes are measured; document text never enters telemetry, only its length.
+Totals are deliberately not summed across bases. `usage_counters` is not
+written: it is an aggregate window table with no caller-JWT write path, and
+making it operational would require a service_role client in `ask` or a
+schema/RLS change — out of scope for H2B.
 
 ## 1.2 Authentication, tenancy, RLS
 
@@ -135,6 +151,11 @@ Provider: Jina AI `jina-embeddings-v5-text-small`, **1024-dim float**,
   evidence order follows the reranker while `fused_rank`/`fused_score` keep
   their RRF provenance values. A reranker failure degrades to RRF order
   (`reranked: false`) instead of failing retrieval.
+- **Rerank skip (H2A, D69).** When the fused pool already fits inside final K
+  (`pool ≤ 8`), there is nothing the reranker can cut, so the provider call is
+  skipped and the fused order stands (`rerank: { attempted, skipped, reason,
+  fused_candidates }` records the decision). Same evidence set, zero provider
+  cost; the boundary is `pool > finalK`, not a hardcoded size.
 - Provenance per evidence item: `chunk_id`, `document_id`, `tenant_id`,
   `file_name`, `page`, `content`, `dense_score/dense_rank`, `lex_score/lex_rank`,
   `fused_rank/fused_score`.
@@ -232,6 +253,30 @@ The assistant row stores `label`, `sources` (provenance JSONB), `model_ids`
 stage timings, tokens, grounded, and — when the checker runs —
 `correctness_verdict`/`correctness_ms`). A persistence failure returns the answer
 with `persisted: false` and a bounded error, never silently.
+
+**Conversation context (H3A, D72).** Before clarification, `ask` reads at most
+`CONTEXT_HISTORY_LIMIT = 4` recent messages of the verified conversation
+(newest first) and summarizes them, in memory only, into: previous user
+question (capped at 1000 chars), whether a prior message exists, and whether
+the **most recent** assistant turn carries evidence chunk ids (`sources`).
+Raw document text is never stored in or read by this layer; evidence is
+identifiers/counts only. A deterministic pure classifier
+(`_shared/follow-up-detector.ts`) labels the new message
+STANDALONE / FOLLOW_UP / UNKNOWN and feeds **telemetry only** — H3A does not
+let context alter the RAG path, and the clarification gate remains the
+response authority (context is recorded alongside it, never a second
+response). No history → continuation signals classify UNKNOWN (fail closed);
+a full knowledge question stays STANDALONE regardless of history.
+
+**Bounded follow-up rewrite (H3B, D73).** AFTER the empty-scope refusal and
+BEFORE retrieval, a FOLLOW_UP whose query is not already self-contained may
+spend **one** Mantle rewrite call (`rewrite-v1`, temperature 0, max 160
+tokens, 12 s timeout, no retry): previous question delimited as data,
+data-not-instructions rule last, output strictly validated. The validated
+rewrite becomes the retrieval query only — the original user question stays
+authoritative for the gate, generation, citations, and persistence, and it is
+what `/ask` stores. Any failure/rejection falls back to the original query.
+Telemetry records `context.rewrite` with measured-or-unknown tokens.
 
 ## 1.11 Ingestion
 

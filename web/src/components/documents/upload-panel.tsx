@@ -1,18 +1,23 @@
 "use client";
 
 import { AlertTriangle, Check, FileText, Loader2, RotateCcw, Upload, X } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DocumentProgress } from "@/components/documents/document-progress";
 import { ApiError, normalizeApiError } from "@/lib/api/errors";
 import { addSource } from "@/lib/api/notebooks";
 import {
   countActiveJobs,
+  countPendingChunks,
+  countTotalChunks,
+  getDocumentStatus,
   ingestDocument,
   ingestTempDocument,
 } from "@/lib/api/documents";
 import { formatBytes, isPdf, MAX_FILE_BYTES, uploadDocument } from "@/lib/api/upload";
+import type { DocumentRow } from "@/lib/api/types";
 import { cn } from "cn";
 
 /**
@@ -33,7 +38,9 @@ import { cn } from "cn";
  *
  * Honest by construction: the only percentage shown is the browser's real
  * upload progress; a waiting row reports the real number of active jobs; a
- * failure keeps the object that is already stored so the user can retry
+ * registered row tracks the real embedding state (`documents.status` plus the
+ * live parsed/embedded chunk counts) until it settles — no animated progress;
+ * a failure keeps the object that is already stored so the user can retry
  * **registration only**, without re-uploading the file.
  */
 
@@ -64,6 +71,27 @@ export const MAX_WORKSPACE_BYTES = 400 * 1024 * 1024;
 /** Bounded wait for the workspace to finish its current document. */
 const WAIT_POLL_MS = 15_000;
 const MAX_WAIT_MS = 20 * 60_000;
+
+/** Live embedding state is polled while a registered row is still processing. */
+const PROGRESS_POLL_MS = 5_000;
+
+type EmbeddingProgress = {
+  status: DocumentRow["status"] | null;
+  total: number | null;
+  pending: number | null;
+};
+
+/**
+ * Settled-ready: the backend status says so — or, equivalently, zero chunks
+ * still await embeddings, which is exactly when the worker marks it ready.
+ */
+function isEmbeddingReady(prog: EmbeddingProgress | undefined): boolean {
+  if (!prog) return false;
+  return (
+    prog.status === "ready" ||
+    (prog.total !== null && prog.total > 0 && prog.pending === 0)
+  );
+}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -109,6 +137,7 @@ export function UploadPanel({
 }) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [progress, setProgress] = useState<Map<string, EmbeddingProgress>>(new Map());
   const queueRef = useRef<QueueItem[]>([]);
   const runningRef = useRef(false);
   const abortRef = useRef<Map<string, AbortController>>(new Map());
@@ -319,6 +348,62 @@ export function UploadPanel({
     [patch, pump],
   );
 
+  // Registered rows track their own embedding progress independently: each
+  // polls the live document status plus the parsed/embedded chunk counts
+  // until it settles. The key changes only when the tracked set changes, so
+  // upload-progress re-renders never restart the cadence.
+  const activeProgressKey = items
+    .filter((item) => {
+      if (item.state !== "done" || !item.documentId) return false;
+      const known = progress.get(item.id);
+      return !known || (known.status !== "ready" && known.status !== "failed");
+    })
+    .map((item) => `${item.id}=${item.documentId}`)
+    .join(",");
+
+  useEffect(() => {
+    if (activeProgressKey === "") return;
+    const targets = activeProgressKey.split(",").map((entry) => {
+      const separator = entry.indexOf("=");
+      return { id: entry.slice(0, separator), documentId: entry.slice(separator + 1) };
+    });
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      const results = await Promise.all(
+        targets.map(async (target) => {
+          const [status, total, pending] = await Promise.all([
+            getDocumentStatus(target.documentId).catch(() => null),
+            countTotalChunks(target.documentId).catch(() => null),
+            countPendingChunks(target.documentId).catch(() => null),
+          ]);
+          return { ...target, status, total, pending };
+        }),
+      );
+      if (cancelled) return;
+      setProgress((prev) => {
+        const next = new Map(prev);
+        for (const result of results) {
+          next.set(result.id, {
+            status: result.status,
+            total: result.total,
+            pending: result.pending,
+          });
+        }
+        return next;
+      });
+      timer = setTimeout(() => void tick(), PROGRESS_POLL_MS);
+    };
+
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeProgressKey]);
+
   const busy = items.some(
     (item) => item.state === "uploading" || item.state === "waiting" || item.state === "registering",
   );
@@ -388,7 +473,7 @@ export function UploadPanel({
               )}
             >
               <div className="flex items-start gap-2">
-                {item.state === "done" ? (
+                {item.state === "done" && isEmbeddingReady(progress.get(item.id)) ? (
                   <Check className="text-success mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 ) : item.state === "failed" ? (
                   <AlertTriangle className="text-destructive mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
@@ -399,21 +484,29 @@ export function UploadPanel({
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs">{item.file.name}</p>
-                  <p className="text-muted-foreground mt-0.5 text-2xs">
-                    {item.state === "queued" ? "Waiting in the queue" : null}
-                    {item.state === "uploading"
-                      ? item.progress === null
-                        ? `Uploading · ${formatBytes(item.file.size)}`
-                        : `Uploading ${Math.round(item.progress * 100)}%`
-                      : null}
-                    {item.state === "waiting"
-                      ? (item.message ?? "Waiting for the workspace…")
-                      : null}
-                    {item.state === "registering" ? "Registering…" : null}
-                    {item.state === "done" && temporary ? "Added to this conversation · temporary" : null}
-                    {item.state === "done" && !temporary ? "Added · processing continues in the background" : null}
-                    {item.state === "failed" ? item.message : null}
-                  </p>
+                  {item.state === "done" && item.documentId ? (
+                    <div className="text-muted-foreground mt-0.5 font-mono text-2xs">
+                      <EmbeddingRow
+                        fileName={item.file.name}
+                        prog={progress.get(item.id)}
+                        temporary={Boolean(temporary)}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground mt-0.5 text-2xs">
+                      {item.state === "queued" ? "Waiting in the queue" : null}
+                      {item.state === "uploading"
+                        ? item.progress === null
+                          ? `Uploading · ${formatBytes(item.file.size)}`
+                          : `Uploading ${Math.round(item.progress * 100)}%`
+                        : null}
+                      {item.state === "waiting"
+                        ? (item.message ?? "Waiting for the workspace…")
+                        : null}
+                      {item.state === "registering" ? "Registering…" : null}
+                      {item.state === "failed" ? item.message : null}
+                    </p>
+                  )}
                   {item.state === "uploading" && item.progress !== null ? (
                     <div
                       className="bg-muted mt-1.5 h-0.5 w-full overflow-hidden rounded-full"
@@ -479,4 +572,49 @@ export function UploadPanel({
       </div>
     </div>
   );
+}
+
+/**
+ * Post-registration state of one row, from live backend reads.
+ *
+ * Zero chunks with no counts means the first poll has not resolved yet (the
+ * static "added" copy); a resolved poll with no usable reads says so instead
+ * of spinning. Ready is the backend status — or, equivalently, zero chunks
+ * still awaiting embeddings, which is exactly when the worker marks it.
+ */
+function EmbeddingRow({
+  fileName,
+  prog,
+  temporary,
+}: {
+  fileName: string;
+  prog: EmbeddingProgress | undefined;
+  temporary: boolean;
+}) {
+  if (!prog) {
+    return (
+      <span>
+        {temporary
+          ? "Added to this conversation · temporary"
+          : "Added · processing continues in the background"}
+      </span>
+    );
+  }
+  if (isEmbeddingReady(prog)) {
+    return (
+      <span className="text-success">{temporary ? "Ready ✓ · temporary" : "Ready ✓"}</span>
+    );
+  }
+  if (prog.status === "failed") {
+    return (
+      <>
+        <span className="text-destructive">Processing failed</span>
+        <span className="mt-1 block">Retry from Documents.</span>
+      </>
+    );
+  }
+  if (prog.status === null && prog.total === null && prog.pending === null) {
+    return <span>Added · status unavailable — check Documents.</span>;
+  }
+  return <DocumentProgress fileName={fileName} total={prog.total} pending={prog.pending} />;
 }

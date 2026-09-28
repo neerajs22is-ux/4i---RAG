@@ -279,8 +279,81 @@ pure conversational messages get a fixed reply and bypass
 embedding/retrieval/rerank/gate/generation; greetings carrying content and all
 other queries take the unchanged RAG path (fail closed). Smoke A–D + warm
 (1.4–2.0 s vs 9–12 s) ALL_PASS; 187/187 shared tests; frontend label mapping
-added (`conversational`, committed with H1). **Do not start the visual review**
-until instructed. Refresh the relevant documents inside each pass (D53).
+added (`conversational`, committed with H1). **H2A guards (D69, deployed):**
+`query-chunks` v34 / `ask` v44 — rerank skipped when fused pool ≤ final K
+(narrow scopes; normal pools still rerank), dual-empty/conflict take the
+existing terminal paths, retrieval is one round with zero expansions
+(recorded per request as `retrieval: {rounds, expansions, rerank}`);
+smoke A–F ALL_PASS (narrow doc skipped with rerank_ms 0, ~605 tokens
+ESTIMATED avoided; conflict + refusal verified; fixtures removed). 197/197
+shared tests (10 new). **H2B telemetry (D70, deployed):** `query-chunks` v35 /
+`ask` v45 — per-turn `telemetry` (router/retrieval/embedding/rerank/evidence/
+generation/checker) returned and persisted in `messages.timings.telemetry`;
+token bases measured/calculated/estimated/unknown, never fabricated. Live:
+rerank usage measured 4.5–4.7K tokens (full pool), skip = calculated zero,
+generation measured, H1 bypass all zeros. 216/216 shared tests. **H2C rerank
+audit (D71, no change):** rerank input is raw chunk text only (N=20,
+16.6–19.1K chars); measured 4.3–4.8K Jina tokens (215–240/candidate); query
+≤1.2%; zero duplicates/wrapper/metadata — no safe representation optimization
+exists; quality-sensitive alternatives documented, nothing deployed or
+changed. **H3A conversation context (D72, deployed):** `ask` v46 reads ≤4
+recent messages (verified conversation only) and records a deterministic
+STANDALONE/FOLLOW_UP/UNKNOWN signal + bounded context flags in
+`telemetry.context`; no RAG behavior change, no reuse/rewrite yet; smoke A–G
+ALL_PASS (233/233 shared tests, 17 new). **H3B bounded rewrite (D73, deployed):**
+`ask` v47 — FOLLOW_UP + not-self-contained → at most ONE Mantle rewrite call
+(`rewrite-v1`, temp 0, 160 tokens max, no retry, strict validation, fallback
+to original); rewritten query is retrieval-only, original question stays
+authoritative for gate/generation/citations/persistence; telemetry
+`context.rewrite` with measured tokens; smoke 16/16 ALL_PASS (207/13 tokens,
+285 ms per applied rewrite), 251/251 tests; 3-pair eval no regression but no
+improvement claim. **H3C-A reuse audit (D74, no change):** `messages.sources`
+reconstructs safely (live test 6/6 sampled turns, 8 sources each, 0 missing,
+0 page mismatches); gate/generation/citations verified compatible (content +
+file/page + ids only); deterministic fail-closed predicate + 17 tests in
+unwired `_shared/evidence-reuse.ts`; eligible reuse would avoid measured
+embed 4–15 tokens / 335–390 ms and rerank 4,495–4,789 tokens / 397–458 ms;
+recommended H3C-B contract recorded (gate on prior evidence, INSUFFICIENT →
+unchanged fallback). **H3C-B reuse (D75, deployed ask v48):** FOLLOW_UP +
+valid prior evidence + gate ≠ INSUFFICIENT → generate from reconstructed
+evidence, skipping rewrite/retrieval/embedding/rerank; everything else
+(invalid/gate-fail/non-follow-up) takes the unchanged path. Live: used cases
+(8 chunks, rounds 0, cited answer AND an honest 0-cite non-answer on a
+tangential pair — gate SUPPORTED is necessary but not sufficient, caveat
+recorded); fallback + malformed rejection verified; 273/273 tests (5 new).
+**H3D reuse evaluation (D76, audit only):** 12-case exploratory set
+(`eval/cases/followup_h3d.json`, separate from frozen benchmark); PATH B vs
+PATH A — TRUE SAFE 2, CORRECT FALLBACK 4, FALSE REUSE 6 (tangential-mention
+pass, 0/8 evidence overlap, honest non-answers; no hallucination/breach),
+FALSE REJECTION 0; no deterministic signal separates safe from false; costs
+measured per factor (used turns skip ~4.3–6.1K rerank tokens); telemetry
+adequate, nothing new needed; v48 unchanged but experimental, rollback lever
+documented. **H3D-SELECTIVE reproduction (6 cases, no code change):** all six
+prior outcomes reproduced — A1 safe reuse stable; A2/C1/E1/F1 false reuse
+stable (tangential-mention pass; C1/E1/F1 0/8 overlap, A2 3/8); B1 fallback
+stable. Refinement: evidence overlap separates in neither direction (safe A1
+also 0/8), so no deterministic rule can be built from it; no new failure
+mode. **H3E gold set + sufficiency (D77, audit only):**
+`eval/cases/followup_gold_h3e.json` (14 cases, required facts, separate from
+frozen benchmark); PATH B vs PATH A — TRUE SAFE 5, CORRECT FALLBACK 1+4,
+FALSE REUSE 7 (tangential-mention pass; 0/8 overlap in 6/7), FALSE REJECTION 0,
+AMBIGUOUS 1; gate-vs-gold: sufficient 5/5 reusable, insufficient 7/8 reusable
+(E-ii proves phrase-presence ≠ entity attribution); no signal separates safe
+from false, no rule proposed; costs per factor; 273/273 green. **H3F offline
+judge study (D78, audit only):** local qwen3-1.7b, 3 variants × 14 cases —
+best (checklist) 13/14 then 12/14; adds info over gate on 6 tangential cases
+but STABLY fails the critical entity-confusion case (I-i ×3), flips a safe
+case across runs, confabulates once, blows output budget on ambiguity;
+~2.3K in/~0.4K out tokens, 2–10 s latency (exceeds the gated work).
+Classification: C. NOT PROMISING at evaluated scale (scoped: 1.7B judge, not
+semantic judgment in general); no implementation. **H3C-B ROLLBACK (D79,
+deployed ask v49):** experimental reuse removed from the production path —
+FOLLOW_UP → H3A context → H3B rewrite → query-chunks → gate → generation
+restored; smoke 9/9 ALL_PASS (incl. ex-reuse pair now citing 5 sources);
+`evidence-reuse.ts` retained unwired as evaluation history; no other function
+touched. **Do not start
+the visual review** until instructed. Refresh the relevant documents inside
+each pass (D53).
 
 ## 8. Workflow rules
 

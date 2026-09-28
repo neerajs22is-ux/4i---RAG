@@ -17,7 +17,9 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
 import { callReranker, mapRerankedPool, parseRerankResponse, RERANK_API_KEY_ENV } from "../_shared/rerank.ts";
+import { planRerank, resolveRankedOrder } from "../_shared/rerank-policy.ts";
 import { unionDocIds } from "../_shared/temp-scope.ts";
+import { embeddingTelemetry, rerankTelemetry } from "../_shared/usage-telemetry.ts";
 
 const JINA_MODEL = "jina-embeddings-v5-text-small";
 const JINA_DIMENSIONS = 1024;
@@ -324,6 +326,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
       ok: true, model: JINA_MODEL, fusion: String(body.fusion ?? FUSION_DEFAULT).toLowerCase(),
       query_tokens: 0, candidates: { dense: 0, lexical: 0 }, evidence: [],
       reranked: false,
+      // No candidates existed because no scope resolved; no provider call was
+      // reachable. Recorded as calculated zeros for a consistent shape.
+      rerank: { fused_candidates: 0, ...rerankTelemetry({
+        attempted: false, skipped: true, skipReason: "scope-empty",
+        inputChars: 0, providerTokens: null, latencyMs: 0,
+      }) },
+      embedding: embeddingTelemetry({ calls: 0, inputChars: 0, providerTokens: null, latencyMs: 0 }),
       scope: { notebook_id: notebookId, document_count: 0, reason: "no-selected-sources" },
       timings: { embed_ms: 0, retrieval_ms: 0, rerank_ms: 0, total_ms: totalMs },
     });
@@ -393,28 +402,39 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const denseCount = cands.filter((c) => c.channel === "dense").length;
   const lexCount = cands.filter((c) => c.channel === "lexical").length;
 
-  // 4. Second-stage rerank over the fused candidate pool (top finalK). A
-  // reranker failure degrades to RRF order instead of failing retrieval, so
-  // a reranker outage never takes down question answering.
+  // 4. Second-stage rerank over the fused candidate pool. H2A guard: when the
+  // pool already fits inside finalK there is nothing to cut down, so the
+  // provider call is skipped entirely and the fused order is preserved
+  // (rerank-policy). A reranker failure still degrades to fused order instead
+  // of failing retrieval, so a reranker outage never takes down question
+  // answering. FINAL_K and the fusion shape are unchanged.
   const tRr0 = performance.now();
+  const rerankPlan = planRerank(pool.length, finalK);
   let ordered = pool;
   let reranked = false;
-  if (pool.length > 0) {
+  const rerankAttempted = rerankPlan.kind === "run";
+  const rerankSkipped = rerankPlan.kind === "skip";
+  const rerankSkipReason = rerankPlan.kind === "skip" ? rerankPlan.reason : null;
+  let rerankProviderTokens: number | null = null;
+  let rerankInputChars = 0;
+  if (rerankPlan.kind === "run") {
+    const rerankDocuments = pool.map((e) => e.row.content);
+    rerankInputChars = rerankDocuments.reduce((sum, text) => sum + text.length, 0);
     const rerankCall = await callReranker({
       apiKey,
       query,
-      documents: pool.map((e) => e.row.content),
+      documents: rerankDocuments,
       topN: Math.min(finalK, pool.length),
       maxCandidates: CANDIDATE_CAP,
     });
     if (rerankCall.ok) {
       const parsed = parseRerankResponse(rerankCall.payload, pool.length, Math.min(finalK, pool.length));
       if (parsed.ok) {
+        rerankProviderTokens = parsed.usageTokens;
         const mapped = mapRerankedPool(pool, parsed.ranked);
-        if (mapped) {
-          ordered = mapped;
-          reranked = true;
-        }
+        const resolved = resolveRankedOrder(pool, mapped);
+        ordered = resolved.ordered;
+        reranked = resolved.reranked;
       } else {
         console.log(JSON.stringify({ fn: "query-chunks", path: "rerank-invalid", error: parsed.error }));
       }
@@ -447,6 +467,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     scope: notebookId ? "notebook" : allowedDocIds ? "documents" : "unscoped",
     allowed_documents: allowedDocIds ? allowedDocIds.length : null,
     dense_candidates: denseCount, lex_candidates: lexCount,
+    fused_candidates: pool.length,
+    rerank_attempted: rerankAttempted, rerank_skipped: rerankSkipped,
+    rerank_skip_reason: rerankSkipReason,
     evidence: evidence.length, query_tokens: queryTokens, reranked, total_ms: totalMs,
   }));
   return json(200, {
@@ -457,6 +480,27 @@ Deno.serve(async (req: Request): Promise<Response> => {
     candidates: { dense: denseCount, lexical: lexCount },
     evidence,
     reranked,
+    // H2A decision + H2B accounting: the deterministic rerank decision and
+    // its cost together (tokens measured when Jina returns usage, otherwise a
+    // clearly labeled chars/4 estimate; a skipped call is a calculated zero).
+    rerank: {
+      fused_candidates: pool.length,
+      ...rerankTelemetry({
+        attempted: rerankAttempted,
+        skipped: rerankSkipped,
+        skipReason: rerankSkipReason,
+        inputChars: rerankInputChars,
+        providerTokens: rerankProviderTokens,
+        latencyMs: rerankMs,
+      }),
+    },
+    // H2B accounting: the single query-embedding call.
+    embedding: embeddingTelemetry({
+      calls: 1,
+      inputChars: query.length,
+      providerTokens: queryTokens > 0 ? queryTokens : null,
+      latencyMs: embedMs,
+    }),
     scope: notebookId
       ? { notebook_id: notebookId, document_count: allowedDocIds?.length ?? 0 }
       : { notebook_id: null, document_count: allowedDocIds ? allowedDocIds.length : null },

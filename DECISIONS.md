@@ -1117,3 +1117,343 @@ D68. H1 pre-RAG router: deterministic conversational bypass in `ask`
 - Revisit if: conversational variants need expanding (keep exact-match),
   or the Harness H2 token work needs router classes for tool gating.
 
+D69. H2A token-efficiency guards: rerank skip, terminal refusal/conflict, one-round invariant
+
+- Decision: (1) skip the Jina reranker when the fused pool ≤ final K
+  (`_shared/rerank-policy.ts`: `planRerank`; outage fallback extracted as
+  `resolveRankedOrder`, semantics unchanged); (2) dual-empty retrieval uses
+  the existing gate refusal with no second attempt; (3) CONFLICTING is
+  terminal — no expansion; (4) retrieval expansion/retry is capped at one by
+  construction: the ask path makes exactly ONE query-chunks call and there is
+  no rewrite or loop anywhere in production. `query-chunks` adds an additive
+  `rerank` trace; `ask` adds `retrieval: { rounds, expansions, rerank }`.
+  Verified-pre-existing guards 2–4 required no code change; no expansion was
+  invented to guard.
+- Reason: reranking a pool that already fits final K cannot change which
+  chunks reach generation — it can only reorder them — so the provider call
+  is provably unnecessary. TFE audit measured rerank as the largest token
+  spend (~8–12K per turn on full pools).
+- Consequence: deployed `query-chunks` v34 / `ask` v44. Smoke: narrow temp
+  doc (3 chunks, fused ≤ 8) → rerank skipped, rerank_ms 0 (previously a full
+  call; ≈605 tokens ESTIMATED avoided, chars/4 proxy); normal pool (20) →
+  rerank attempted (437 ms); unanswerable → INSUFFICIENT/unsupported-claims;
+  empty scope → immediate refusal; conflicting temp docs → CONFLICTING with
+  zero expansions. 197/197 shared tests (10 new H2A guard tests).
+- Revisit if: skip rate is negligible on production corpora (then evaluate
+  top-K/pool reductions with the benchmark, eval-gated), or the H2B work
+  introduces real expansion rounds that need this budget enforced.
+
+D70. H2B token accounting: per-turn telemetry with explicit measurement bases
+
+- Decision: add `_shared/usage-telemetry.ts` (pure builders) and emit a
+  per-turn `telemetry` object from `ask` (all 200 paths plus provider-error
+  502s), persisted inside `messages.timings.telemetry`. Token metrics are
+  `{value, basis}` with four bases: measured (provider-reported: Jina embed +
+  rerank `usage.total_tokens`, Mantle prompt/completion tokens), calculated
+  (deterministic zeros for work not performed, e.g. an H1 conversational
+  bypass or an H2A skipped rerank), estimated (chars/4 — the only proxy), and
+  unknown (unavailable; the Mantle parser's coerced 0 is classified unknown,
+  never presented as a measurement). `query-chunks` now also emits
+  `embedding` accounting and captures the previously discarded rerank
+  `usageTokens`. No raw content/prompts/answers/keys enter telemetry (tests
+  pin this). `usage_counters` deliberately left untouched.
+- Reason: live measurement showed rerank usage IS provider-reported
+  (Jina returns `usage.total_tokens`), so the TFE audit's chars/4 rerank
+  estimate can be replaced by a measured value per turn; before H2B the only
+  durable trace was flat timings plus a few token numbers on the success path.
+- Consequence: deployed `query-chunks` v35 / `ask` v45. Live sample:
+  full-pool query → rerank measured 4,639 tokens (18,296 chars, 397 ms);
+  narrow scope → rerank `{0, calculated}` (H2A skip); generation measured
+  (e.g. 2,332 in / 242 out); embedding measured (8–13 tokens); unanswerable →
+  refusal with generation `{0, calculated}`; H1 "Hi" → all provider sections
+  calculated zeros. 216/216 shared tests (19 new telemetry tests).
+- Revisit if: checker input usage needs capturing (currently unknown; checker
+  disabled by default), or an aggregate cost view is needed — that requires a
+  deliberate decision about a service-role aggregation writer, not a silent
+  extension of this request-level trace.
+
+D71. H2C rerank-input audit: rerank tokens are irreducible chunk content
+
+- Decision: no representation-level optimization implemented; nothing
+  deployed. The rerank request is exactly `{model, query, documents: [raw
+  chunk text ×N], top_n, return_documents: false}` — no metadata, labels, ids,
+  instructions, wrapper text, or repeated query, verified in
+  `rerank.ts:buildRerankRequest` and the `query-chunks` call site.
+- Findings (six live production samples, all N=20): rerank input 16,605–19,120
+  chars; measured Jina rerank usage 4,312–4,789 tokens (215–240
+  tokens/candidate; 3.6–4.4 chars/token). The query contributes 4–56 tokens
+  (≤1.2%; embedding usage as the same-family proxy — calculated). JSON
+  serialization is not tokenized by the provider. Corpus: 757 chunks, p50 945
+  chars (chunker CHUNK_SIZE 1000 / overlap 200), zero exact-duplicate contents
+  tenant-wide, whitespace 16.3% with no collapsible artifacts (no multi-space
+  runs, no tabs). H2B telemetry already makes this observable (candidates,
+  input_chars, measured tokens); no new fields added.
+- Quality-sensitive alternatives identified but NOT implemented: reducing
+  candidates (out of phase scope), truncating or overlap-stripping candidate
+  text before rerank (changes what the cross-encoder scores), or changing the
+  reranker model.
+- Revisit if: rerank cost becomes material enough to fund a quality evaluation
+  (A/B on the frozen benchmark) of a truncated/overlap-stripped rerank
+  representation, or the chunker changes.
+
+D72. H3A minimum conversation context + deterministic follow-up detection (telemetry only)
+
+- Decision: add `_shared/conversation-context.ts` (bounded contract:
+  `CONTEXT_HISTORY_LIMIT=4` newest-first messages, question capped at 1000
+  chars, most-recent-assistant evidence ids only) and
+  `_shared/follow-up-detector.ts` (pure classifier: STANDALONE / FOLLOW_UP /
+  UNKNOWN). `ask` reads the bounded window before the clarification gate and
+  records a `context` section in the H2B telemetry (used, classification,
+  history_turns_read, previous_message_available, prior_evidence_available,
+  latency_ms) plus one metadata-only log line. **No RAG behavior changes**:
+  nothing consults the classification; clarification keeps precedence and
+  never produces a second response; no evidence reuse and no rewriting yet.
+- Rules: FOLLOW_UP requires BOTH an explicit continuation construction
+  (`what about`/`how about`, `and <content>`, bare `why`, ordinal references,
+  question lead + that/those/these) AND history; without history continuation
+  shapes are UNKNOWN. STANDALONE requires a substantive question/imperative
+  and is never degraded by history. Bare imperatives ("tell me more",
+  "explain this"), fragments and empty input are UNKNOWN (fail closed).
+- Reason: H2B audit established that `ask` sent zero conversation context to
+  the model; the smallest safe first step is a deterministic signal plus the
+  bounded data contract, measured before any reuse is attempted.
+- Consequence: deployed `ask` v46 (query-chunks untouched). Live A–G: first
+  turn STANDALONE; follow-up FOLLOW_UP with history_turns_read 2 and prior
+  evidence true; a specific question stays STANDALONE with history; "Tell me
+  more." UNKNOWN; continuation-shaped first turn UNKNOWN; H1 bypass unchanged;
+  fresh conversations isolated. 233/233 shared tests (17 new).
+- Revisit if: H3B wants query rewriting/evidence reuse — then FOLLOW_UP gates
+  it, always inside the same scoping and never for STANDALONE/UNKNOWN.
+
+D73. H3B bounded follow-up rewrite: retrieval-only, one call, deterministic fallback
+
+- Decision: add `_shared/query-rewrite.ts` — deterministic eligibility
+  (FOLLOW_UP only, previous question required, and `requiresContextualRewrite`
+  rejects already-self-contained continuations), one immutable prompt
+  (`rewrite-v1`, previous question delimited as data, data-not-instructions
+  rule last), one Mantle call maximum (ANSWER_MODEL_ID, temp 0, max_tokens
+  160, 12 s timeout, no retry anywhere), strict output validation (empty,
+  multiline, too-long/expansion, citation, formatting, instruction-like,
+  answer-like, unchanged all rejected), and mandatory fallback to the
+  original query. **The original user question remains authoritative for the
+  evidence gate, generation, citations, and persistence; only the retrieval
+  call receives the rewritten query.** Telemetry `context.rewrite`
+  {attempted, applied, fallback, reason, input/output chars, latency, model,
+  measured-or-unknown tokens}; `context.used` now means the rewrite applied.
+- Reason: H3A established the context signal but nothing consumed it; this is
+  the smallest step that makes a follow-up self-contained for retrieval while
+  preserving every deterministic control and avoiding any second loop.
+- Consequence: deployed `ask` v47 (no other function). Smoke A–D/F/G: 16/16
+  PASS — standalone/unknown/self-contained never call the model; the
+  follow-up pair applied one rewrite (994-char prompt → 60-char query, 207/13
+  measured tokens, 285 ms) with the stored user row unchanged; H1 bypass
+  intact. 251/251 shared tests (18 new). Small 3-pair evaluation: overlap of
+  raw vs rewritten evidence 4–5 of 8, all gates SUPPORTED, no regression —
+  but no improvement claim (no follow-up gold set exists).
+- Revisit if: a follow-up evaluation set is built — improvement must be
+  shown there before H3C evidence reuse; or rewrite latency/rejection rates
+  drift in production telemetry.
+
+D74. H3C-A prior-evidence reuse safety audit: technically safe, not wired
+
+- Decision: no production change and nothing deployed. Add an isolated,
+  unwired contract module `_shared/evidence-reuse.ts` (+17 tests) implementing
+  the deterministic reconstruction/validation predicate, and record the
+  recommended H3C-B contract. Production follow-ups keep the H3B retrieval
+  path.
+- Verified facts: `messages.sources` persists {n, chunk_id, document_id,
+  file_name, page, fused_rank, fused_score}; live `chunks` rows supply content
+  and page (chunk_id = content hash → immutable text); tenant is enforced by
+  the tenant-filtered fetch + explicit predicate; deleted documents cascade
+  chunks → `missing-chunk`; temp docs are detectable via
+  `documents.expires_at`/`conversation_id`/`status`; the current scope's
+  allowed ids come from the same server-side resolution retrieval uses.
+  Ineligibility reasons, fail-closed and ordered: no-prior-evidence,
+  malformed-sources, missing-chunk, missing-document, tenant-mismatch,
+  temp-scope-mismatch, temp-expired, document-not-ready, scope-mismatch,
+  page-mismatch, empty-content.
+- Gate compatibility (independently verified, grounding.ts:320-322,
+  449-450): `verifyEvidence` reads only question + `evidence[].content`;
+  `buildEvidenceBlock` uses file_name/page/content; `validateCitations` uses
+  chunk_id/document_id + tenant boundary. Dense/lex scores are not used
+  downstream — reconstruction sets them null and preserves the persisted
+  fused_rank/fused_score and the cited order. No gate change is needed.
+- Cost (measured H2B): an eligible reuse would avoid the Jina query embedding
+  (4–15 measured tokens; 335–390 ms) and the Jina rerank (4,495–4,789 measured
+  tokens; 397–458 ms); match_chunks RPC token cost none, latency not currently
+  surfaced. Generation remains. Do not sum across bases; these are per-factor
+  measured figures, and savings only materialize when the reuse gate holds.
+- Recommended H3C-B contract (not implemented): after scope resolution and
+  only for FOLLOW_UP with prior sources — fetch chunks/documents under the
+  caller JWT, run `evaluateEvidenceReuse`; if eligible run the existing gate
+  on the reconstructed evidence with the ORIGINAL question; if the verdict is
+  not INSUFFICIENT, generate with that evidence (skipping rewrite/query-chunks)
+  and record `context.reuse`; if INSUFFICIENT, discard and continue the
+  unchanged H3B path. Ordering caveat: reused evidence keeps the previous
+  question's rerank order — a quality consideration for evaluation, not a
+  correctness issue.
+- Revisit if: H3C-B is scheduled — it must be eval-gated (follow-up set), keep
+  the gate authoritative, and fall back to fresh retrieval on any doubt.
+
+D75. H3C-B bounded prior-evidence reuse in `ask` (deployed v48)
+
+- Decision: wire the H3C-A predicate into `ask` between scope resolution and
+  the H3B rewrite. FOLLOW_UP with prior assistant sources → validate against
+  live chunks/documents (all H3C-A fail-closed predicates, unchanged) → run
+  the EXISTING gate on the reconstruction with the ORIGINAL question → use it
+  only on a non-INSUFFICIENT verdict (`shouldUseReusedEvidence`; single
+  shared stage, no duplicated logic). Gate INSUFFICIENT or any invalidity
+  falls through to the unchanged H3B path with no retry: rewrite skipped on
+  reuse, retrieval/embedding/rerank skipped, query/gate/generation/guard/
+  tripwire/checker/persistence byte-identical otherwise.
+- Reason: measured retrieval round costs ~4.6K tokens + ~0.8 s on FOLLOW_UP
+  turns whose evidence the prior turn already established; determinism and the
+  gate make the attempt cheap and safe, with the unchanged path as the
+  universal fallback.
+- Consequence (live, ask v48): follow-up "Does that apply to Category III
+  funds as well?" reused 8 prior chunks with gate PARTIAL and produced a
+  cited correct answer with rounds 0, rewrite skipped, no provider calls. A
+  tangential follow-up ("What about Category III?" on Category-II-eligibility
+  evidence) reused with gate SUPPORTED but generated an honest 0-citation
+  non-answer where fresh retrieval cites — accepted and recorded, see caveat.
+  Fallback (gate-insufficient), malformed-sources rejection, temp/scope
+  guards, STANDALONE/UNKNOWN/CONVERSATIONAL exclusions, citation integrity,
+  original preservation, and cleanup all verified live. 273/273 shared tests
+  (5 new: decision matrix + sources helper).
+- Caveat (load-bearing): the deterministic gate is necessary but not
+  sufficient for reuse quality — tangential mentions can pass its atom check,
+  and reused evidence keeps the previous question's rerank order. Do NOT claim
+  equivalence with fresh retrieval. Next step is a follow-up evaluation set
+  and monitoring of used/fallback rates; rollback is a v47 ask redeploy with
+  no data impact.
+- Revisit if: eval shows systematic degradation (tighten or remove reuse), or
+  H4 wants broader orchestration — reuse stays single-attempt, gate-gated.
+
+D76. H3D follow-up reuse evaluation: audit only, no behavior change
+
+- Decision: no production change, nothing deployed. Built exploratory set
+  `eval/cases/followup_h3d.json` (12 live cases + 1 documented non-case;
+  separate from the frozen 34-case benchmark). Compared PATH B (in-context
+  follow-up, reuse live) against PATH A (same question as first turn, fresh
+  retrieval) on gate/label/evidence ids/citations/key facts/latency/telemetry.
+- Findings (12 evaluated): TRUE SAFE REUSE 2 (A1, E2 — cited, gold-matching);
+  CORRECT FALLBACK 4 (B1, B2, H1-temp-redo, H2-scope — gate-insufficient,
+  malformed, temp-validated, scope-mismatch all fell back correctly);
+  FALSE REUSE 6 (A2, C1, C2, D1, E1, F1 — gate SUPPORTED/PARTIAL on tangential
+  mentions, 0/8 evidence overlap with fresh in all six, honest 0–2-citation
+  non-answers where fresh retrieval cites correctly); FALSE REJECTION 0.
+  Class G (conflict) not live-feasible — no conflicting production material
+  exists and fabricating regulatory text is unsafe; gate covered by unit tests.
+- Failure mode: tangential-mention pass — follow-up atoms appear as asides in
+  prior evidence (e.g. one chunk containing "category"+"iii"), the gate passes
+  SUPPORTED/PARTIAL, and generation honestly reports absence. Citation count
+  does not imply answerability (a 6-citation non-answer occurred). No
+  hallucination, scope breach, or fabricated citation was observed in any case;
+  the worst outcome is the architecture's preferred safe failure (omission).
+- Signals investigated (gate verdict, unsupported count, shared-token density,
+  entity change, document continuity, citation count): none separates safe
+  from false reuse in this sample — including an inversion (PARTIAL supported
+  both safe and false cases; SUPPORTED produced both a correct answer and a
+  non-answer). Reported as-is; no heuristic implemented.
+- Cost (measured, per factor): used turns avoid embed 1 call/7–15 tokens,
+  rerank 1 call/4.3–6.1K tokens (PATH A controls), rewrite 1 call/~0.2K;
+  added validation latency 502–775 ms; turn latency 3.2–5.4 s (reuse) vs
+  7.3–11.6 s (fresh). No cross-basis totals.
+- Telemetry adequacy: attempted/eligible/used/reason/chunks/gate_verdict/
+  validation_latency/rounds/calls/tokens all present per turn and persisted;
+  adequate for monitoring used/fallback rates and zero-citation used turns.
+  No new metric or subsystem needed. Wild scan: 120 recent production turns,
+  0 reuse attempts yet — no signal either way.
+- Recommendation: v48 remains unchanged (fail-closed, honest, monitored) but
+  reuse stays experimental — no quality-equivalence claim. Next: a proper
+  follow-up eval set plus a tightened reuse-sufficiency rule before relying
+  on it; rollback lever is a v47 `ask` redeploy with zero data impact.
+- Revisit if: wild telemetry shows false-reuse patterns at scale, or H4
+  proposes orchestration that depends on reuse quality.
+
+D77. H3E follow-up gold set + reuse-sufficiency analysis (audit only)
+
+- Decision: no production change, nothing deployed. Built grounded set
+  `eval/cases/followup_gold_h3e.json` (14 cases, required facts from CA gold
+  where mapped; separate from the frozen benchmark) and ran PATH B (reuse)
+  vs PATH A (first-turn fresh) for every used case.
+- Findings (14): TRUE SAFE 5 (A-i, A-ii, A-iii, B-i, B-ii — cited or correct;
+  B-ii/A-iii reuse answered what fresh retrieval refused); CORRECT FALLBACK 1
+  (D-ii) + 4 referenced (B1/B2/H-temp/H-scope); FALSE REUSE 7 (C-i, D-i, E-i,
+  E-ii, F-i, G-i, I-i — gate SUPPORTED/PARTIAL on tangential mentions, 0/8
+  fresh-evidence overlap in 6 of 7, honest non-answers where fresh cites,
+  corroborating H3D's A2/C2 pattern); FALSE REJECTION 0; AMBIGUOUS 1 (H-i
+  temp: facts present per-chunk, answer needs cross-chunk enumeration the
+  pipeline did not perform).
+- Gate-vs-gold confusion: gold-sufficient 5/5 reusable (never rejected);
+  gold-insufficient 7/8 reusable, 1/8 rejected. The gate is necessary but not
+  sufficient: E-ii proves phrase-presence without entity attribution passes
+  (Cat II "shall not borrow" text for a Category I question); C-i proves a
+  phrase in the wrong regulation context passes.
+- Signals: gate verdict, unsupported count (inverted in-sample), shared-token
+  density, entity change, document continuity, citation count (anti-correlated:
+  a 6-citation and a 4-citation non-answer occurred) — none separates safe
+  from false. Required-fact coverage separates this sample perfectly BUT is
+  not a deterministic boundary: it needs the answer to know the facts
+  (circular), misses paraphrase, and false-positives on E-ii-type entity
+  mismatch. Stated explicitly: no sufficiency rule is proposed.
+- Cost (measured, per factor): used turns avoid embed 1 call/7–15 tokens,
+  rerank 1 call/4.3–6.1K tokens; validation adds 502–775 ms; turn totals
+  ~3–6.5 s (reuse) vs ~7–13 s (fresh). No cross-basis totals.
+- Telemetry adequate; wild scan shows zero reuse attempts in production
+  traffic so far. v48 unchanged + experimental; rollback lever stands.
+- Revisit if: a larger adjudicated follow-up set exists, or wild telemetry
+  shows false reuse at scale — then tighten, gate, or roll back on evidence.
+
+D78. H3F offline semantic-sufficiency study: NOT PROMISING at evaluated scale
+
+- Decision: no production change, nothing deployed, no judge in production.
+  Studied whether a bounded semantic judge can distinguish sufficient from
+  insufficient prior evidence, using local qwen3-1.7b (LM Studio, temp 0) on
+  the 14 H3E gold cases — same inputs every variant (previous question,
+  follow-up, 8 prior-evidence blocks; no gold facts, no fresh retrieval).
+  Artifact: `eval/cases/followup_semantic_sufficiency_h3f.json`.
+- Findings: best variant (explicit checklist) 13/14 then 12/14 with one
+  additional run flip; direct variant 10/13 parsed-correct; adversarial
+  variant over-corrects (2 false-insufficiencies) and blows its output budget
+  most often. The judge adds real information over the gate in 6 tangential
+  cases (C-i, D-i, E-i, E-ii, F-i, G-i correctly refused) — but fails exactly
+  the critical boundary: I-i entity confusion (ESOP "set up" tangent read as
+  a sponsor definition) judged SUFFICIENT on all 3 runs; one rationale
+  confabulated a number ("25%"); safe case A-i flipped verdict across runs;
+  ambiguous input caused unparseable think-block blowouts.
+- Cost: ~1.8–2.4K input tokens + ~0.2–0.6K output per call, 2.2–10 s latency
+  (median ~4.6 s) — latency alone exceeds the ~0.4 s rerank it would gate, and
+  breakeven needs an unproven >~60% reuse-hit rate. The `enable_thinking`
+  toggle is ignored by this server; think blocks were stripped for parsing.
+- Classification: C. NOT PROMISING as a deterministic production safety
+  boundary at this scale — a gate with a stable blind spot on the exact
+  failure mode it must catch is not a safety gate. Explicitly scoped: this
+  judges a 1.7B local judge, not semantic judgment in general.
+- Revisit if: an offline eval of a production-scale judge on the same
+  artifact (same protocol, stability + cost measured) shows the critical
+  entity-attribution boundary held with no confabulation — only then design
+  architecture, never before.
+
+D79. H3C-B rollback: remove experimental reuse from production (deployed ask v49)
+
+- Decision: remove the H3C-B prior-evidence reuse branch from the `ask`
+  production path, restoring the H3B behavior (FOLLOW_UP → H3A context →
+  H3B rewrite → query-chunks → gate → generation). No other function, model,
+  constant, prompt, gate, guard, tripwire, checker, schema, or frontend file
+  changed. `_shared/evidence-reuse.ts` (+22 tests) is retained unwired as
+  evaluation history; its contract, fail-closed predicates, and unit tests are
+  untouched.
+- Reason: H3D/H3D-SELECTIVE/H3E found repeated FALSE REUSE with no reliable
+  deterministic sufficiency boundary, H3F found the tested semantic judge
+  unsuitable, and the wild scan showed 0 reuse attempts — no demonstrated
+  production-wide token savings to justify keeping an experimental quality
+  risk in the execution path.
+- Consequence (live, ask v49): follow-ups always take fresh retrieval
+  (rounds 1); the previously-reusing pair now retrieves and cites 5 sources;
+  reuse telemetry is inert zeros (`attempted/eligible/used` false); H1/H2A/H2B/
+  H3A/H3B verified unchanged; 273/273 shared tests pass; 9/9 smoke checks pass.
+  Do NOT claim any production token-saving success for H3C-B.
+- Revisit if: a future phase re-proposes reuse — only with an eval-gated
+  sufficiency boundary and the H3C-A predicates intact.
+

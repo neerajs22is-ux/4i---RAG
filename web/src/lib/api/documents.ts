@@ -116,6 +116,38 @@ export async function countPendingChunks(documentId: string): Promise<number> {
 }
 
 /**
+ * Total chunks parsed for a document — the denominator for progress.
+ * Same read shape as `countPendingChunks` without the NULL filter, so no
+ * backend change was needed: completed = total − pending, both live values.
+ * Zero while the document is still parsing (chunks are inserted at parse).
+ */
+export async function countTotalChunks(documentId: string): Promise<number> {
+  const { count, error } = await getSupabaseClient()
+    .from("chunks")
+    .select("chunk_id", { count: "exact", head: true })
+    .eq("document_id", documentId);
+
+  const normalized = normalizePostgrestError(error, "chunks");
+  if (normalized) throw normalized;
+  return count ?? 0;
+}
+
+/** Live status of one document (upload-queue progress tracking). */
+export async function getDocumentStatus(
+  documentId: string,
+): Promise<DocumentRow["status"]> {
+  const { data, error } = await getSupabaseClient()
+    .from("documents")
+    .select("status")
+    .eq("id", documentId)
+    .single();
+
+  const normalized = normalizePostgrestError(error, "documents");
+  if (normalized) throw normalized;
+  return (data as { status: DocumentRow["status"] }).status;
+}
+
+/**
  * Register an already-uploaded object and start ingestion.
  *
  * The document row is created here (status `pending`) and the pipeline parses

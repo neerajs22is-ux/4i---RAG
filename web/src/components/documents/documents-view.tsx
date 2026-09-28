@@ -1,7 +1,7 @@
 "use client";
 
 import { FileStack, RotateCcw, Trash2, Upload } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   EmptyState,
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   countPendingChunks,
+  countTotalChunks,
   deleteDocument,
   listDocuments,
   listIngestJobs,
@@ -31,6 +32,7 @@ import {
 import { retryIngest } from "@/lib/api/documents";
 import { ApiError, normalizeApiError } from "@/lib/api/errors";
 import type { DocumentRow, IngestJobRow } from "@/lib/api/types";
+import { DocumentProgress } from "@/components/documents/document-progress";
 import { compactNumber } from "@/lib/format";
 import { cn } from "cn";
 
@@ -39,11 +41,14 @@ import { cn } from "cn";
  *
  * Everything shown is real: `documents.status`, the latest `ingest_jobs` row
  * (status, attempts, last failure reason) and, for documents still processing,
- * the true count of chunks awaiting embeddings. Nothing is simulated — when the
- * workspace is empty, the empty state says so.
+ * the true parsed/embedded chunk counts. Nothing is simulated — when the
+ * workspace is empty, the empty state says so, and the percentage is always
+ * derived from live counts, never animated.
  *
- * Upload is not part of this pass: it needs a Storage insert plus the document
- * registration flow, and belongs with the document experience.
+ * Real state is polled while anything is still processing (the same pattern
+ * as the conversation file strip): the list refreshes a few seconds after an
+ * upload registers, transitions are announced once, and a failed read stops
+ * the poll with an explicit retry instead of spinning forever.
  */
 
 type LoadState =
@@ -53,8 +58,12 @@ type LoadState =
       documents: DocumentRow[];
       jobs: Map<string, IngestJobRow>;
       pending: Map<string, number>;
+      totals: Map<string, number>;
     }
   | { kind: "error"; error: ApiError };
+
+/** Real state is polled while anything is still processing. */
+const POLL_MS = 5_000;
 
 const STATUS_STYLE: Record<DocumentRow["status"], string> = {
   ready: "border-success/25 bg-success-muted text-success",
@@ -76,13 +85,22 @@ export function DocumentsView() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<DocumentRow | null>(null);
   const [uploading, setUploading] = useState(false);
+  /** A read that fails after the first load stops the poll, with retry. */
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  /** Status seen on the previous read, for one announcement per transition. */
+  const statusRef = useRef<Map<string, string>>(new Map());
 
+  // Load, then keep polling only while something is still processing. Every
+  // state update happens inside an async callback; a failed read stops the
+  // poll and offers an explicit retry.
   useEffect(() => {
     if (!activeWorkspace) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const tenantId = activeWorkspace.tenantId;
 
-    (async () => {
+    const tick = async () => {
       try {
         const [documents, jobs] = await Promise.all([
           listDocuments(tenantId),
@@ -93,32 +111,66 @@ export function DocumentsView() {
         for (const job of jobs) {
           if (!jobMap.has(job.document_id)) jobMap.set(job.document_id, job);
         }
-        // Real progress for anything still processing.
-        const pending = new Map<string, number>();
+        // Real progress for anything still processing: parsed chunks (the
+        // denominator) and chunks still awaiting embeddings.
         const processing = documents.filter((d) => d.status === "pending");
-        const counts = await Promise.all(
-          processing.map((d) =>
-            countPendingChunks(d.id).catch(() => null),
+        const [pendingCounts, totalCounts] = await Promise.all([
+          Promise.all(
+            processing.map((d) => countPendingChunks(d.id).catch(() => null)),
           ),
-        );
+          Promise.all(
+            processing.map((d) => countTotalChunks(d.id).catch(() => null)),
+          ),
+        ]);
+        if (cancelled) return;
+        const pending = new Map<string, number>();
+        const totals = new Map<string, number>();
         processing.forEach((d, i) => {
-          const value = counts[i];
-          if (value !== null) pending.set(d.id, value);
+          if (pendingCounts[i] !== null) pending.set(d.id, pendingCounts[i]);
+          if (totalCounts[i] !== null) totals.set(d.id, totalCounts[i]);
         });
-        if (!cancelled) setState({ kind: "ready", documents, jobs: jobMap, pending });
-      } catch (error) {
-        if (!cancelled) {
-          setState({ kind: "error", error: normalizeApiError(error, "documents") });
+
+        const transitions: string[] = [];
+        for (const doc of documents) {
+          const before = statusRef.current.get(doc.id);
+          if (before !== undefined && before !== doc.status) {
+            if (doc.status === "ready") transitions.push(`${doc.file_name} is ready.`);
+            if (doc.status === "failed") {
+              transitions.push(`${doc.file_name} could not be processed.`);
+            }
+          }
+          statusRef.current.set(doc.id, doc.status);
         }
+
+        setState({ kind: "ready", documents, jobs: jobMap, pending, totals });
+        setPollError(null);
+        if (transitions.length > 0) setAnnouncement(transitions.join(" "));
+
+        if (documents.some((d) => d.status === "pending")) {
+          timer = setTimeout(() => void tick(), POLL_MS);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        const api = normalizeApiError(error, "documents");
+        setState((prev) =>
+          prev.kind === "ready"
+            ? prev
+            : { kind: "error", error: api },
+        );
+        setPollError((prev) => prev ?? api.userMessage);
       }
-    })();
+    };
+
+    void tick();
 
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [activeWorkspace, reloadToken]);
 
   const reload = useCallback(() => {
+    setPollError(null);
     setState({ kind: "loading" });
     setReloadToken((n) => n + 1);
   }, []);
@@ -196,6 +248,20 @@ export function DocumentsView() {
         </p>
       ) : null}
 
+      {pollError ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <p className="text-muted-foreground text-xs">{pollError}</p>
+          <Button variant="ghost" size="xs" onClick={reload} className="gap-1.5">
+            <RotateCcw className="size-3" aria-hidden="true" />
+            Retry
+          </Button>
+        </div>
+      ) : null}
+
+      <p className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </p>
+
       <div className="mt-8">
         {state.kind === "loading" ? (
           <LoadingState label="Loading documents" />
@@ -222,6 +288,7 @@ export function DocumentsView() {
             {state.documents.map((doc) => {
               const job = state.jobs.get(doc.id);
               const pending = state.pending.get(doc.id);
+              const total = state.totals.get(doc.id);
               const busy = busyId === doc.id;
               return (
                 <li key={doc.id}>
@@ -231,15 +298,22 @@ export function DocumentsView() {
                         <p className="truncate text-sm font-medium">
                           {doc.file_name}
                         </p>
-                        <p className="text-muted-foreground mt-0.5 font-mono text-2xs">
-                          {doc.page_count != null
-                            ? `${compactNumber(doc.page_count)} pages`
-                            : "page count pending"}
-                          {doc.embedding_model ? ` · ${doc.embedding_model}` : ""}
-                          {pending != null && pending > 0
-                            ? ` · ${compactNumber(pending)} chunks embedding`
-                            : ""}
-                        </p>
+                        {doc.status === "pending" ? (
+                          <div className="text-muted-foreground mt-0.5 font-mono text-2xs">
+                            <DocumentProgress
+                              fileName={doc.file_name}
+                              total={total ?? null}
+                              pending={pending ?? null}
+                            />
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground mt-0.5 font-mono text-2xs">
+                            {doc.page_count != null
+                              ? `${compactNumber(doc.page_count)} pages`
+                              : "page count pending"}
+                            {doc.embedding_model ? ` · ${doc.embedding_model}` : ""}
+                          </p>
+                        )}
                         {doc.status === "failed" && job?.last_error ? (
                           <p className="text-conflict mt-1 text-2xs text-pretty">
                             {job.last_error}
