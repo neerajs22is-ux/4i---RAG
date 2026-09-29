@@ -76,33 +76,43 @@
     0 8px 24px -12px color-mix(in oklab, var(--primary) 45%, transparent);
 }
 
-/* --- Colour tokens ------------------------------------------------------ */
+/* --- Colour tokens ------------------------------------------------------
+   Brand palette (source hex in comments):
+     Neutrals  — Platinum (surfaces/borders), Jet Black & Onyx (text/panels)
+     Primary   — Bright Gold (fills, CTAs, active/selected, focus)
+     Secondary — Saffron (subtle warm tints, hovers, secondary emphasis)
+   Gold is layered deliberately: Bright Gold stays for FILLS (with a near-black
+   foreground, 13.5:1); `--primary-strong` and `--primary-ink` are darker golds
+   used for icons and text on light surfaces, where bright gold would fail
+   contrast. Neutrals carry the base; warm tint is the accent, not the field. */
 
 :root {
   --radius: 0.625rem;
 
   /* Surfaces */
-  --background: oklch(0.994 0.0015 264);
-  --foreground: oklch(0.185 0.012 264);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.185 0.012 264);
+  --background: oklch(0.9607 0.0017 247.84); /* Platinum 50  #f1f2f3 */
+  --foreground: oklch(0.2126 0.0067 258.37); /* Jet Black 900 #17191c */
+  --card: oklch(1 0 0); /* white surface */
+  --card-foreground: oklch(0.2126 0.0067 258.37); /* Jet Black 900 */
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.185 0.012 264);
+  --popover-foreground: oklch(0.2126 0.0067 258.37);
 
   /* Interaction */
-  --primary: oklch(0.515 0.192 268);
-  --primary-foreground: oklch(0.985 0.005 268);
-  --secondary: oklch(0.962 0.004 264);
-  --secondary-foreground: oklch(0.26 0.012 264);
-  --muted: oklch(0.963 0.004 264);
-  --muted-foreground: oklch(0.518 0.014 264);
-  --accent: oklch(0.955 0.010 268);
-  --accent-foreground: oklch(0.26 0.014 268);
+  --primary: oklch(0.8861 0.1826 97.96); /* Bright Gold 500 #fad905 (fill) */
+  --primary-foreground: oklch(0.1779 0.0064 271.04); /* Jet Black 950 #101114 */
+  --primary-strong: oklch(0.6066 0.1247 98.26); /* Gold 700 #968203 — icons/UI */
+  --primary-ink: oklch(0.4557 0.0936 99.08); /* Gold 800 #645702 — text links */
+  --secondary: oklch(0.9217 0.0029 264.54); /* Platinum 100 #e4e5e7 */
+  --secondary-foreground: oklch(0.2126 0.0067 258.37);
+  --muted: oklch(0.9217 0.0029 264.54); /* Platinum 100 */
+  --muted-foreground: oklch(0.5174 0.0098 196.85); /* Onyx 600 #626a6a */
+  --accent: oklch(0.9779 0.0214 95.28); /* Saffron 50 #fcf8e8 — warm tint */
+  --accent-foreground: oklch(0.2126 0.0067 258.37);
 
   /* Lines */
-  --border: oklch(0.912 0.005 264);
-  --input: oklch(0.898 0.006 264);
-  --ring: oklch(0.515 0.192 268);
+  --border: oklch(0.8412 0.0077 260.73); /* Platinum 200 #c8cbd0 */
+  --input: oklch(0.8412 0.0077 260.73);
+  --ring: oklch(0.6066 0.1247 98.26); /* Gold 700 — visible gold focus */
 
   /* Feedback */
   --destructive: oklch(0.577 0.204 27);
@@ -127,33 +137,35 @@
   --neutral-state-muted: oklch(0.958 0.004 264);
 
   /* Chart/data accents (kept minimal; used for provenance visuals) */
-  --chart-1: oklch(0.515 0.192 268);
+  --chart-1: oklch(0.8861 0.1826 97.96); /* Bright Gold 500 */
   --chart-2: oklch(0.545 0.135 162);
-  --chart-3: oklch(0.700 0.152 74);
+  --chart-3: oklch(0.7973 0.1585 88.83); /* Saffron 500 */
   --chart-4: oklch(0.578 0.186 352);
   --chart-5: oklch(0.556 0.021 264);
 }
 
 .dark {
-  --background: oklch(0.158 0.010 264);
-  --foreground: oklch(0.965 0.004 264);
-  --card: oklch(0.198 0.010 264);
-  --card-foreground: oklch(0.965 0.004 264);
-  --popover: oklch(0.212 0.010 264);
-  --popover-foreground: oklch(0.965 0.004 264);
+  --background: oklch(0.1845 0.0032 196.88); /* Onyx 950 #111313 */
+  --foreground: oklch(0.9217 0.0029 264.54); /* Platinum 100 #e4e5e7 */
+  --card: oklch(0.2189 0.0046 196.82); /* Onyx 900 #181b1b */
+  --card-foreground: oklch(0.9217 0.0029 264.54);
+  --popover: oklch(0.2189 0.0046 196.82);
+  --popover-foreground: oklch(0.9217 0.0029 264.54);
 
-  --primary: oklch(0.700 0.160 268);
-  --primary-foreground: oklch(0.158 0.020 268);
-  --secondary: oklch(0.262 0.010 264);
-  --secondary-foreground: oklch(0.965 0.004 264);
-  --muted: oklch(0.262 0.010 264);
-  --muted-foreground: oklch(0.702 0.014 264);
-  --accent: oklch(0.288 0.014 268);
-  --accent-foreground: oklch(0.965 0.004 264);
+  --primary: oklch(0.8861 0.1826 97.96); /* Bright Gold 500 (fill) */
+  --primary-foreground: oklch(0.1779 0.0064 271.04); /* Jet Black 950 */
+  --primary-strong: oklch(0.9045 0.1747 99.97); /* Gold 400 #fbe137 — icons */
+  --primary-ink: oklch(0.9045 0.1747 99.97); /* Gold 400 — text links */
+  --secondary: oklch(0.3251 0.0055 196.88); /* Onyx 800 #313535 */
+  --secondary-foreground: oklch(0.9217 0.0029 264.54);
+  --muted: oklch(0.3251 0.0055 196.88); /* Onyx 800 */
+  --muted-foreground: oklch(0.6752 0.0144 262.36); /* Platinum 400 #9297a0 */
+  --accent: oklch(0.2649 0.0481 90.77); /* Saffron 900 #2e2405 — warm tint */
+  --accent-foreground: oklch(0.9217 0.0029 264.54);
 
   --border: oklch(1 0 0 / 11%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.700 0.160 268);
+  --ring: oklch(0.9045 0.1747 99.97); /* Gold 400 — visible gold focus */
 
   --destructive: oklch(0.660 0.190 25);
   --destructive-foreground: oklch(0.985 0.005 25);
@@ -171,9 +183,9 @@
   --neutral-state-foreground: oklch(0.170 0.005 264);
   --neutral-state-muted: oklch(0.270 0.006 264);
 
-  --chart-1: oklch(0.700 0.160 268);
+  --chart-1: oklch(0.9045 0.1747 99.97); /* Gold 400 */
   --chart-2: oklch(0.715 0.140 162);
-  --chart-3: oklch(0.790 0.148 80);
+  --chart-3: oklch(0.8345 0.1459 91.84); /* Saffron 400 */
   --chart-4: oklch(0.712 0.160 352);
   --chart-5: oklch(0.690 0.020 264);
 
@@ -184,6 +196,9 @@
     0 4px 12px -4px oklch(0 0 0 / 0.45), 0 2px 4px -2px oklch(0 0 0 / 0.30);
   --shadow-lg:
     0 12px 32px -12px oklch(0 0 0 / 0.60), 0 4px 8px -4px oklch(0 0 0 / 0.35);
+  --shadow-glow:
+    0 0 0 1px color-mix(in oklab, var(--primary) 22%, transparent),
+    0 8px 24px -12px color-mix(in oklab, var(--primary) 45%, transparent);
 }
 
 /* --- Tailwind token bridge ---------------------------------------------- */
@@ -197,6 +212,8 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-ink: var(--primary-ink);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);

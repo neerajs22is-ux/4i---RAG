@@ -2,10 +2,15 @@
 
 Status: **UI Passes 1–3B, the post-3B fixes, the notebook build (Pass A
 foundation, Pass B notebook experience, Pass C upload, Pass D source selection),
-Pass E (chat polish), the Spaces/sidebar polish pass and the temporary-file
-pass (D60) are implemented and authenticated-verified. The dedicated visual
-review pass is NOT started** (2026-09-17).
+Pass E (chat polish), the Spaces/sidebar polish pass, the temporary-file pass
+(D60), the citation/evidence refinement, the chat-layout + answer-reveal pass
+and the RAG-4i brand colour system are implemented and verified. The dedicated
+visual review pass is NOT started.**
 This file is the source of truth for the **frontend only**.
+
+The design system (§9) is the RAG-4i brand token set: an Onyx / Jet Black /
+Platinum neutral foundation with Bright Gold as the primary accent and Saffron
+as the secondary warm accent.
 
 Terminology (D56): user-facing copy says **Space/Spaces** for the product
 concept; tables, API fields (`notebook_id`), types, functions and the
@@ -358,9 +363,99 @@ Internal names remain `notebook*` (D56); the surfaces say Space.
 
 ## 9. Design system
 
-- Tokens in `src/app/globals.css`: semantic surface/text/border roles, radius
-  and elevation scales, four **evidence-semantic** accents mapped to the
-  grounding states, `hairline`, `shimmer`, `scrollbar-none` utilities.
+### 9.1 Semantic color-token architecture
+
+Colour is defined **once** in `src/app/globals.css` as CSS custom properties and
+bridged to Tailwind v4 through `@theme inline` (`--color-*`). Components never
+carry raw hex values: they consume semantic roles only — `bg-background`,
+`text-foreground`, `bg-card`, `bg-primary`, `text-muted-foreground`, `bg-accent`,
+`ring`, `text-success`, … — so a palette change is a token change, never a
+component sweep. The palette itself is the RAG-4i brand system (neutral
+foundation + gold/saffron accent); every mapped level below is an oklch value
+with its source brand hex named in a comment in `globals.css`.
+
+### 9.2 Neutral foundation (Onyx / Jet Black / Platinum)
+
+Neutrals carry roughly 70–80% of the surface area and remain the base in both
+themes.
+
+- **Light mode** — `background` = Platinum 50 `#f1f2f3`; `card`/`popover` =
+  white; `foreground` = Jet Black 900 `#17191c`; `border`/`input` = Platinum 200
+  `#c8cbd0`; `secondary`/`muted` = Platinum 100 `#e4e5e7`; `muted-foreground` =
+  Onyx 600 `#626a6a`.
+- **Dark mode** — `background` = Onyx 950 `#111313`; `card`/`popover` = Onyx 900
+  `#181b1b`; `foreground` = Platinum 100 `#e4e5e7`; `secondary`/`muted` = Onyx
+  800 `#313535`; `muted-foreground` = Platinum 400 `#9297a0`; borders stay a low
+  neutral alpha over the dark surface.
+
+Platinum, Jet Black and Onyx are used for surfaces, panels, navigation,
+typography and borders — never as accent.
+
+### 9.3 Primary accent — Bright Gold
+
+`--primary` is **Bright Gold 500 `#fad905`**, used deliberately and sparingly
+(≈5–10% of the surface). It is a **fill / emphasis** colour, always paired with
+`--primary-foreground` = Jet Black 950 `#101114` (13.5:1), never as bright gold
+text on a light surface.
+
+Where it is used intentionally:
+
+- **Primary CTAs** — default `Button`, composer send, default `Badge`, checked
+  `Checkbox`, text selection.
+- **Brand identity marks** — the “4i” tile in the sidebar, auth gate, 404 and
+  empty-state headers.
+- **Active / selected states** — via the warm `--accent` tint (below), with the
+  active nav icon and small definition icons drawn in `--primary-strong`.
+- **Focus** — `--ring` is a gold value, so focus rings read as brand.
+- **Elevation accent** — `--shadow-glow` is derived from `--primary`.
+
+### 9.4 Secondary accent — Saffron
+
+`--accent` / `--accent-foreground` are the Saffron family — Saffron 50
+`#fcf8e8` on light, Saffron 900 `#2e2405` on dark. This is a **subtle warm tint
+layer**, not a second bright colour: it backs hover states (`hover:bg-accent`),
+the animated active-nav indicator, the active conversation row, and the
+selected/highlighted evidence row. Saffron keeps the interface warm and
+branded without competing with Bright Gold.
+
+### 9.5 `primary-strong` and `primary-ink` (why they exist)
+
+Bright Gold fails contrast as text or icons on light surfaces (~1.4:1 on
+white), so two darker-gold semantic tokens exist purely for legibility:
+
+- `--primary-strong` — **Gold 700 `#968203`** on light, **Gold 400 `#fbe137`**
+  on dark. Used for **icons and small UI accents** (active nav icon,
+  feature-card glyphs, hover text on citation chips), meeting non-text
+  contrast.
+- `--primary-ink` — **Gold 800 `#645702`** on light, Gold 400 on dark. Used for
+  **body text links** (`Button`/`Badge` `link` variants, links inside answers),
+  meeting AA text contrast (6.5:1) where bright gold would not.
+
+The rule: **Bright Gold for fills, darker golds for text/ink on light**. This
+keeps the brand recognisable while keeping every token accessible.
+
+### 9.6 Semantic status colours stay separate
+
+The four evidence/gate states remain their own functional token set —
+`--success`, `--partial` (via `--warning`), `--conflict` and `--neutral-state`
+(with `-muted` fills) — because they encode **meaning** (grounded / partly
+supported / sources disagree / not enough evidence), not brand. They are
+deliberately **not** recoloured to gold/saffron: a reader must be able to tell a
+grounding state from a brand accent. Chart tokens are separate for the same
+reason, with `chart-1`/`chart-3` aligned to the brand only for continuity.
+
+### 9.7 Light / dark, accessibility, and usage intent
+
+Both themes are first-class: the token set is defined in `:root` and `.dark`,
+and the whole app, including gold fills, is verified in each. Accessibility is
+the constraint that shapes the palette (see 9.5): body and muted text clear AA
+in both themes, primary buttons clear AA by a wide margin (13.5:1), focus rings
+use a gold value with sufficient non-text contrast, and `themeColor` metadata in
+`layout.tsx` matches the Platinum/Onyx backgrounds. Brand colour is applied at
+the surfaces listed in 9.3–9.5 and nowhere else; neutrals stay dominant.
+
+### 9.8 Typography, motion, and interaction
+
 - Typography: **Instrument Sans** (UI) and **JetBrains Mono** (citations, chunk
   ids, page numbers, timings), self-hosted through `next/font` and exposed as
   `font-sans` / `font-mono` tokens.
@@ -420,7 +515,8 @@ These follow from the locked backend; violating them would make the UI lie.
 | Polish-pass screenshots | VERIFIED | `%TEMP%\rag4i-polish-shots\space-{390,768,1440}-{light,dark}.png`, `drawer-1440-light.png`, `mobile-nav-390.png`; raw checks archived at `eval/runs/ui-polish-spaces-sidebar-results-20260917.json` (report: `eval/runs/ui-polish-spaces-sidebar.md`) |
 | **Temporary-file pass (D60/D61)** — composer attach, conversation strip (processing → ready → expired), promote, remove | **VERIFIED** | live Chrome/CDP with the real account and a real 1-page PDF: 30/30 checks, 0 console errors; `ingest-temp` payload carried only `action`/`tenant_id`/`storage_path`/`file_name`/`conversation_id`; real worker state showed "Processing · 1 passages left" → "Ready"; scoped `/ask` cited `lease.pdf` ("36 months"); reload kept transcript + strip; `/documents` excluded the file until **Save to workspace** and listed it after; document deleted and production restored to 2 documents / 0 temporary rows; 0 horizontal overflow at 390 px |
 | Temporary-file pass evidence | VERIFIED | `%TEMP%\rag4i-temp-files-shots\` (4 screenshots + `results.json`); report: `eval/runs/ui-temporary-chat-files.md` |
-| **Chat layout + answer reveal** (single scroll context, Copy-only actions, answer card, collapsed-by-default evidence, `AnswerReveal` block cascade) | IMPLEMENTED + locally VERIFIED, uncommitted | `tsc`/`eslint`/`next build` clean; live local prod build: fresh answers reveal progressively and settle <2 s with identical final DOM, `/`→`/c` remount replays once via the announcement-module handoff (no replay on reload), collapsed default holds, marker/badge navigation + repeats + themes + 390 px + reload all pass, 0 console errors; probe conversations deleted |
+| **Chat layout + answer reveal** (single scroll context, Copy-only actions, answer card, collapsed-by-default evidence, `AnswerReveal` block cascade) | IMPLEMENTED + VERIFIED (`ce3b946`) | `tsc`/`eslint`/`next build` clean; live local prod build: fresh answers reveal progressively and settle <2 s with identical final DOM, `/`→`/c` remount replays once via the announcement-module handoff (no replay on reload), collapsed default holds, marker/badge navigation + repeats + themes + 390 px + reload all pass, 0 console errors; probe conversations deleted |
+| **RAG-4i brand colour system** (Onyx/Jet Black/Platinum neutrals; Bright Gold primary; Saffron secondary; `primary-strong`/`primary-ink`) | VERIFIED | centralized token rewrite in `globals.css`, no hardcoded component colours; light + dark + 390 px + desktop screenshots (`brand-*.png`); canvas-sampled contrast: heading 15.7:1 / 14.8:1, body+muted 5.2:1 / 6.2:1, primary fill 13.5:1; 0 console errors, 0 overflow; no behaviour/API change |
 
 ## 12. Pending and deferred work
 

@@ -448,7 +448,7 @@ export function ChatView({
                             key={principle.title}
                             className="rounded-xl border border-border bg-card p-4 shadow-sm"
                           >
-                            <span className="bg-primary/10 text-primary inline-flex size-7 items-center justify-center rounded-lg">
+                            <span className="bg-primary/10 text-primary-strong inline-flex size-7 items-center justify-center rounded-lg">
                               <Icon className="size-4" aria-hidden="true" />
                             </span>
                             <h2 className="text-foreground mt-3 text-sm font-semibold">
@@ -735,7 +735,7 @@ function NotebookFirstQuestion({
           const Icon = item.icon;
           return (
             <StaggerItem key={item.title} className="flex items-start gap-2.5">
-              <Icon className="text-primary mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <Icon className="text-primary-strong mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               <div className="min-w-0">
                 <p className="text-xs font-medium">{item.title}</p>
                 <p className="text-muted-foreground mt-0.5 text-2xs text-pretty">

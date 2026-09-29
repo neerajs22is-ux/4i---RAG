@@ -38,8 +38,10 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0b0f" },
+    // Browser chrome only (metadata cannot read CSS variables) — matches the
+    // Platinum / Onyx backgrounds in globals.css.
+    { media: "(prefers-color-scheme: light)", color: "#f1f2f3" },
+    { media: "(prefers-color-scheme: dark)", color: "#111313" },
   ],
 };
 

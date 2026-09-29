@@ -74,7 +74,7 @@ export function CitationMarker({
       title={title}
       aria-label={`Source ${n}: ${label} — show source`}
       className={cn(
-        "border-border bg-muted text-foreground hover:border-primary/40 hover:bg-accent hover:text-primary focus-visible:ring-ring/50 ml-0.5 inline-flex min-w-5 cursor-pointer items-center justify-center rounded-md border px-1 font-mono text-2xs align-super transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
+        "border-border bg-muted text-foreground hover:border-primary/40 hover:bg-accent hover:text-primary-strong focus-visible:ring-ring/50 ml-0.5 inline-flex min-w-5 cursor-pointer items-center justify-center rounded-md border px-1 font-mono text-2xs align-super transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
         highlighted &&
           "border-primary/40 bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
       )}

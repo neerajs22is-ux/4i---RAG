@@ -130,7 +130,7 @@ function buildComponents(
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="text-primary underline underline-offset-2"
+          className="text-primary-ink underline underline-offset-2"
         >
           {children}
         </a>

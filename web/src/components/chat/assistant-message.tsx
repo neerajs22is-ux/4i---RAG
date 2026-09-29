@@ -245,7 +245,7 @@ export function AssistantMessage({
                       "focus-visible:ring-ring/50 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent font-mono text-2xs transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
                       active
                         ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-foreground hover:border-primary/40 hover:text-primary",
+                        : "bg-muted text-foreground hover:border-primary/40 hover:text-primary-strong",
                     )}
                   >
                     {citation.n}

@@ -64,7 +64,7 @@ export function SidebarNav({
               aria-hidden="true"
               className={cn(
                 "relative size-4 shrink-0 transition-transform duration-[var(--duration-fast)]",
-                active ? "text-primary" : "group-hover:translate-x-0.5",
+                active ? "text-primary-strong" : "group-hover:translate-x-0.5",
               )}
             />
             {!collapsed ? (
