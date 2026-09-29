@@ -98,4 +98,54 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   if (normalized) throw normalized;
 }
 
+/**
+ * Message edit support (linear edit + truncate + regenerate).
+ *
+ * The schema keeps no history: messages are plain linear rows ordered by
+ * `created_at`, and RLS permits member update/delete (`messages_update_members`,
+ * `messages_delete_members` — "append-mostly by convention", corrections
+ * allowed). These two helpers are the only message mutations the browser
+ * performs for editing; `/ask` itself still owns appending new rows.
+ *
+ * Both scope every write by `tenant_id` in addition to the row id, so a
+ * caller can never touch another workspace's rows even if an id were guessed.
+ */
+
+/** Replace a user message's content in place (position and timestamps kept). */
+export async function updateMessageContent(
+  tenantId: string,
+  messageId: string,
+  content: string,
+): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("messages")
+    .update({ content })
+    .eq("id", messageId)
+    .eq("tenant_id", tenantId);
+  const normalized = normalizePostgrestError(error, "messages");
+  if (normalized) throw normalized;
+}
+
+/**
+ * Remove an explicit set of message rows (the stale tail after an edit).
+ * Takes row ids — resolved from a fresh `listMessages` read — rather than a
+ * timestamp window, so rapid successive writes can never over-delete. An
+ * empty list is a no-op (PostgREST rejects empty `.in()` filters).
+ */
+export async function deleteMessagesByIds(
+  tenantId: string,
+  conversationId: string,
+  messageIds: string[],
+): Promise<void> {
+  if (messageIds.length === 0) return;
+  const { error } = await getSupabaseClient()
+    .from("messages")
+    .delete()
+    .eq("conversation_id", conversationId)
+    .eq("tenant_id", tenantId)
+    .in("id", messageIds);
+  const normalized = normalizePostgrestError(error, "messages");
+  if (normalized) throw normalized;
+}
+
 export { ApiError };

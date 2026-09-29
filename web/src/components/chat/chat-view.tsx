@@ -28,10 +28,14 @@ import { Stagger, StaggerItem } from "@/components/motion/primitives";
 import { useSession } from "@/components/providers/session-provider";
 import { Button } from "@/components/ui/button";
 import { ask } from "@/lib/api/client";
-import { createConversation } from "@/lib/api/conversations";
+import {
+  createConversation,
+  deleteMessagesByIds,
+  listMessages,
+  updateMessageContent,
+} from "@/lib/api/conversations";
 import { ApiError, normalizeApiError, type ApiErrorKind } from "@/lib/api/errors";
 import type { MessageRow } from "@/lib/api/types";
-import { listMessages } from "@/lib/api/conversations";
 import { viewFromResponse, viewFromStored, type AnswerView } from "@/lib/chat/answer-view";
 import {
   setPendingAnnouncement,
@@ -60,6 +64,13 @@ import { DURATION, EASE } from "@/lib/motion";
  * transcript can jump back to the latest content after scrolling up; answer
  * citation markers navigate directly to their supporting passage and back;
  * `/` focuses the composer. None of this adds backend behaviour or invents progress.
+ *
+ * Message editing is linear edit + truncate + regenerate: a user message can
+ * be edited in place (same Composer, Esc cancels), the stored row is updated,
+ * the edited question is regenerated through the normal `/ask` path, and only
+ * then are the replaced later rows removed by explicit id. Nothing is
+ * truncated before the new answer exists, so a failed regeneration loses
+ * nothing. No branches, no version graph.
  */
 
 type ChatItem =
@@ -72,6 +83,18 @@ type ChatItem =
       question: string;
       message: string;
       kindOf: ApiErrorKind;
+      /**
+       * Edit-flow recovery. The default retry resubmits `question` as a new
+       * ask; when present, this runs instead (e.g. retrying only the removal
+       * of replaced messages after the regenerated answer already arrived).
+       */
+      retry?: () => void;
+      retryLabel?: string;
+    }
+  | {
+      kind: "note";
+      id: string;
+      text: string;
     };
 
 const PRINCIPLES = [
@@ -106,6 +129,70 @@ function answerAnnouncement(view: AnswerView): string {
   const cited = view.citations.length;
   if (cited === 0) return base;
   return `${base} ${cited} ${cited === 1 ? "source" : "sources"} cited.`;
+}
+
+/**
+ * Deletion set for edit finalization, computed from a FRESH row list taken
+ * after the regenerated answer persisted.
+ *
+ * `/ask` always persists its own user row alongside the new assistant row, so
+ * that duplicate of the edited message must go too. Rule: drop everything
+ * strictly after the edited row's timestamp except the single newest
+ * assistant row (the regenerated answer, identified by list position among
+ * the newest timestamp — same-transaction pairs share one timestamp, so the
+ * last assistant in `created_at` order wins). No time windows, no guessing.
+ */
+function computeDeleteIds(
+  rows: MessageRow[],
+  editedId: string,
+  editedTime: number,
+): string[] {
+  const after = rows.filter(
+    (r) => r.id !== editedId && Date.parse(r.created_at) >= editedTime,
+  );
+  if (after.length === 0) return [];
+  let newestAssistant: string | null = null;
+  for (const r of after) {
+    if (r.role === "assistant") newestAssistant = r.id;
+  }
+  return after
+    .filter((r) => r.id !== newestAssistant)
+    .map((r) => r.id);
+}
+
+/** Final transcript shape after a successful edit regeneration. */
+function buildEditedItems(
+  prev: ChatItem[],
+  itemId: string,
+  trimmed: string,
+  view: AnswerView,
+  editTag: string,
+  showNote: boolean,
+  errorItem: Extract<ChatItem, { kind: "error" }> | null,
+): ChatItem[] {
+  const idx = prev.findIndex(
+    (entry) => entry.kind === "user" && entry.id === itemId,
+  );
+  const head = idx >= 0 ? prev.slice(0, idx) : prev;
+  const next: ChatItem[] = [
+    ...head,
+    { kind: "user", id: itemId, content: trimmed },
+  ];
+  if (showNote) {
+    next.push({
+      kind: "note",
+      id: `${editTag}-note`,
+      text: "Earlier follow-ups were removed when this message was edited.",
+    });
+  }
+  next.push({
+    kind: "answer",
+    id: `${editTag}-a`,
+    view,
+    entrance: true,
+  });
+  if (errorItem) next.push(errorItem);
+  return next;
 }
 
 export function ChatView({
@@ -144,6 +231,32 @@ export function ChatView({
   const [announcement, setAnnouncement] = useState("");
   const [focusToken, setFocusToken] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
+  /**
+   * Message being edited (its item id), or null. Only one edit at a time;
+   * the bottom composer is disabled while set, and edit controls hide.
+   */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingBusy, setEditingBusy] = useState(false);
+  /**
+   * Synchronous double-submit guard — React state does not land before a
+   * second Enter keypress. Mirrors `editingBusy`.
+   */
+  const editingBusyRef = useRef(false);
+  /** Live mirror of `items` for the async edit flow. */
+  const itemsRef = useRef<ChatItem[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+  /**
+   * Context for retrying edit finalization (re-list → delete → settle) after
+   * the regenerated answer already arrived. Recomputed on every retry, never
+   * replayed from stale ids.
+   */
+  const pendingFinalizeRef = useRef<{
+    editedId: string;
+    editedTime: number;
+    errorItemId: string;
+  } | null>(null);
 
   /**
    * Mirror of `activeId` readable synchronously. A temporary file can create a
@@ -379,8 +492,237 @@ export function ChatView({
   );
 
   function retry(item: Extract<ChatItem, { kind: "error" }>) {
+    if (item.retry) {
+      item.retry();
+      return;
+    }
     setItems((prev) => prev.filter((entry) => entry.id !== item.id));
     void send(item.question);
+  }
+
+  /**
+   * Latest `runEditFlow`, mirrored for error-item retries (avoids stale
+   * closures when the owning render is long gone). Assigned after the flow
+   * is defined below.
+   */
+  const runEditFlowRef = useRef<
+    ((itemId: string, text: string) => Promise<void>) | null
+  >(null);
+
+  /** Retry only the finalize step (re-list → delete → settle). */
+  const retryFinalize = useCallback(async () => {
+    const pending = pendingFinalizeRef.current;
+    const conversationId = activeIdRef.current;
+    if (!pending || !activeWorkspace || !conversationId) return;
+    try {
+      const fresh = await listMessages(conversationId);
+      await deleteMessagesByIds(
+        activeWorkspace.tenantId,
+        conversationId,
+        computeDeleteIds(fresh, pending.editedId, pending.editedTime),
+      );
+      pendingFinalizeRef.current = null;
+      setItems((prev) => prev.filter((entry) => entry.id !== pending.errorItemId));
+    } catch {
+      // The error item stays; the user can retry finalizing again.
+    }
+  }, [activeWorkspace]);
+
+  /**
+   * Linear message edit + truncate + regenerate.
+   *
+   * Safe order (never truncate first):
+   *   1. fresh `listMessages` read (also resolves live synthetic item ids to
+   *      stored rows by user-message ordinal);
+   *   2. update the edited row's content in place (position kept);
+   *   3. regenerate through the normal `/ask` path (persists a new user row
+   *      plus the new assistant row);
+   *   4. fresh re-list, then delete everything after the edited row except
+   *      the regenerated answer (this also removes `/ask`'s duplicate user
+   *      row and any orphan rows from an earlier half-failed attempt).
+   *
+   * If the ask fails — or its answer was not persisted — nothing is deleted:
+   * the edited text is saved, the old answers remain, and the error item
+   * retries the whole flow (idempotent — the update rewrites the same
+   * content). If only finalizing fails, the new answer stands and the error
+   * item retries just the finalize step, recomputed from a fresh read.
+   *
+   * Note: at step 3 the still-present later messages are visible to the
+   * follow-up rewrite input (retrieval-query wording only); the gate,
+   * generation and citations always use the submitted edited question.
+   */
+  const runEditFlow = useCallback(
+    async (itemId: string, text: string) => {
+      if (!activeWorkspace || editingBusyRef.current) return;
+      const conversationId = activeIdRef.current;
+      if (!conversationId) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      editingBusyRef.current = true;
+      setEditingBusy(true);
+      const editTag = `edit-${Date.now()}`;
+      try {
+        const clientUsers = itemsRef.current.filter(
+          (entry): entry is Extract<ChatItem, { kind: "user" }> =>
+            entry.kind === "user",
+        );
+        const clientIndex = clientUsers.findIndex((u) => u.id === itemId);
+        const rows = await listMessages(conversationId);
+        const direct = rows.find((r) => r.id === itemId);
+        const dbUsers = rows.filter((r) => r.role === "user");
+        const edited =
+          direct && direct.role === "user"
+            ? direct
+            : clientIndex >= 0
+              ? (dbUsers[clientIndex] ?? null)
+              : null;
+        if (!edited) {
+          throw new ApiError("not-found", { source: "messages" });
+        }
+        const editedTime = Date.parse(edited.created_at);
+        // Notice rule: only when genuine follow-up turns vanish — a later
+        // USER message means the reader saw turns that are now gone.
+        // Replacing just the edited message's own answer needs no notice
+        // (standard regenerate behavior). Same-transaction rows share a
+        // timestamp; the edited row itself is excluded by id.
+        const hadStale = rows.some(
+          (r) =>
+            r.role === "user" &&
+            r.id !== edited.id &&
+            Date.parse(r.created_at) > editedTime,
+        );
+        await updateMessageContent(
+          activeWorkspace.tenantId,
+          edited.id,
+          trimmed,
+        );
+        const response = await ask({
+          tenantId: activeWorkspace.tenantId,
+          query: trimmed,
+          conversationId,
+          notebookId: notebookId ?? null,
+        });
+        if (!response.persisted) {
+          throw new ApiError("backend", { source: "ask" });
+        }
+        const view = viewFromResponse(response);
+        let finalizeError: unknown = null;
+        try {
+          const fresh = await listMessages(conversationId);
+          await deleteMessagesByIds(
+            activeWorkspace.tenantId,
+            conversationId,
+            computeDeleteIds(fresh, edited.id, editedTime),
+          );
+        } catch (error) {
+          finalizeError = error;
+        }
+        if (finalizeError) {
+          pendingFinalizeRef.current = {
+            editedId: edited.id,
+            editedTime,
+            errorItemId: `${editTag}-e`,
+          };
+        }
+        setItems((prev) =>
+          buildEditedItems(
+            prev,
+            itemId,
+            trimmed,
+            view,
+            editTag,
+            hadStale,
+            finalizeError
+              ? {
+                  kind: "error",
+                  id: `${editTag}-e`,
+                  question: "",
+                  message:
+                    "The new answer arrived, but finishing the edit failed. Nothing was lost.",
+                  kindOf: normalizeApiError(finalizeError, "messages").kind,
+                  retry: () => {
+                    void retryFinalize();
+                  },
+                  retryLabel: "Retry finalizing",
+                }
+              : null,
+          ),
+        );
+        setEditingId(null);
+        invalidateConversations();
+        recordAskOutcome(true);
+        setAnnouncement(answerAnnouncement(view));
+      } catch (error) {
+        const normalized = normalizeApiError(error, "ask");
+        recordAskOutcome(false, normalized.kind);
+        const errId = `${editTag}-e`;
+        setItems((prev) => {
+          const idx = prev.findIndex(
+            (entry) => entry.kind === "user" && entry.id === itemId,
+          );
+          const fixed =
+            idx >= 0
+              ? prev.map((entry, i) =>
+                  i === idx && entry.kind === "user"
+                    ? { ...entry, content: trimmed }
+                    : entry,
+                )
+              : prev;
+          return [
+            ...fixed,
+            {
+              kind: "error",
+              id: errId,
+              question: trimmed,
+              message:
+                "Couldn't regenerate the answer. Nothing was removed — try again.",
+              kindOf: normalized.kind,
+              retry: () => {
+                void runEditFlowRef.current?.(itemId, trimmed);
+              },
+              retryLabel: "Try again",
+            },
+          ];
+        });
+        setEditingId(null);
+      } finally {
+        editingBusyRef.current = false;
+        setEditingBusy(false);
+      }
+    },
+    [activeWorkspace, notebookId, retryFinalize],
+  );
+
+  useEffect(() => {
+    runEditFlowRef.current = runEditFlow;
+  }, [runEditFlow]);
+
+  function startEdit(itemId: string) {
+    if (editingBusyRef.current) return;
+    setEditingId(itemId);
+  }
+
+  function cancelEdit() {
+    // Esc never interrupts an in-flight regeneration: there is no Stop, so a
+    // busy edit can only finish, not cancel.
+    if (editingBusyRef.current) return;
+    setEditingId(null);
+  }
+
+  function submitEdit(itemId: string, text: string) {
+    if (editingBusyRef.current) return;
+    void runEditFlow(itemId, text);
+  }
+
+  /* ------------------------------------------------- edit affordances */
+
+  const editLocked = sending || editingBusy;
+  /** Edit buttons show only when no edit and no request is in flight. */
+  function editActionFor(
+    item: Extract<ChatItem, { kind: "user" }>,
+  ): (() => void) | undefined {
+    if (editLocked || editingId !== null) return undefined;
+    return () => startEdit(item.id);
   }
 
   /* ----------------------------------------------------------------- views */
@@ -487,7 +829,26 @@ export function ChatView({
                 {items.map((item) => (
                   <li key={item.id}>
                     {item.kind === "user" ? (
-                      <UserMessage content={item.content} entrance={item.entrance} />
+                      editingId === item.id ? (
+                        <Composer
+                          key={`edit-${item.id}`}
+                          initialValue={item.content}
+                          onSubmit={(text) => submitEdit(item.id, text)}
+                          busy={editingBusy}
+                          onCancel={editingBusy ? undefined : cancelEdit}
+                          idPrefix="edit"
+                          autoFocus
+                          disabledReason={
+                            editingBusy ? "Regenerating the answer…" : undefined
+                          }
+                        />
+                      ) : (
+                        <UserMessage
+                          content={item.content}
+                          entrance={item.entrance}
+                          onEdit={editActionFor(item)}
+                        />
+                      )
                     ) : null}
 
                     {item.kind === "answer" ? (
@@ -500,6 +861,12 @@ export function ChatView({
 
                     {item.kind === "pending" ? (
                       <RequestStatus startedAt={item.startedAt} />
+                    ) : null}
+
+                    {item.kind === "note" ? (
+                      <p className="text-muted-foreground/80 mx-auto max-w-md text-center text-2xs text-pretty">
+                        {item.text}
+                      </p>
                     ) : null}
 
                     {item.kind === "error" ? (
@@ -517,7 +884,7 @@ export function ChatView({
                           className="gap-1.5"
                         >
                           <RotateCcw className="size-3.5" aria-hidden="true" />
-                          Send again
+                          {item.retryLabel ?? "Send again"}
                         </Button>
                         <p className="text-muted-foreground/70 w-full text-2xs text-pretty">
                           Sending again may add a second entry if the request did
@@ -592,10 +959,14 @@ export function ChatView({
           <Composer
             onSubmit={send}
             busy={sending}
-            disabled={composerDisabled}
+            disabled={composerDisabled || editingId !== null}
             focusToken={focusToken}
             disabledReason={
-              composerDisabled ? "No workspace is available" : undefined
+              composerDisabled
+                ? "No workspace is available"
+                : editingId !== null
+                  ? "Finish or cancel the edit to send a new message"
+                  : undefined
             }
             autoFocus={items.length === 0}
             attach={{

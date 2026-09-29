@@ -15,13 +15,19 @@ import { cn } from "cn";
  * Composer.
  *
  * Deliberately plain: a growing textarea, Enter to send, Shift+Enter for a new
- * line, a locked state while a request is in flight, and a visible count as the
+ * line, Esc to cancel when an `onCancel` owner is present (message editing),
+ * a locked state while a request is in flight, and a visible count as the
  * question approaches the backend's 1000-character limit.
  *
  * There is no Stop button. `/ask` is non-streaming and persists its answer
  * before responding, so cancelling the browser request would leave the server
  * finishing and storing an answer the user believes they cancelled — an
  * accepted honesty constraint, not an oversight (see the pass report).
+ *
+ * The same component serves message editing: the host passes the current text
+ * as `initialValue` (with a per-message `key` so drafts never leak between
+ * messages) and an `onCancel`. `idPrefix` keeps label/help ids unique when
+ * more than one composer is mounted.
  */
 
 const MAX_QUERY = 1000;
@@ -35,6 +41,9 @@ export function Composer({
   autoFocus = true,
   focusToken = 0,
   attach,
+  initialValue,
+  onCancel,
+  idPrefix = "composer",
 }: {
   onSubmit: (query: string) => void;
   busy: boolean;
@@ -52,8 +61,17 @@ export function Composer({
    * owns the action; the composer only renders and labels it.
    */
   attach?: { onClick: () => void; disabled?: boolean; label: string };
+  /**
+   * Editing support. `initialValue` seeds the draft (the host remounts per
+   * message via `key`); `onCancel` wires the Escape key and is advertised in
+   * the help line. Both absent in the normal ask flow.
+   */
+  initialValue?: string;
+  onCancel?: () => void;
+  /** Prefix for label/help ids so concurrent composers stay unique. */
+  idPrefix?: string;
 }) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialValue ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Grow with content, up to a bound. A DOM write in an effect (not state).
@@ -81,6 +99,11 @@ export function Composer({
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape" && onCancel) {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -88,6 +111,8 @@ export function Composer({
   }
 
   const locked = busy || disabled;
+  const inputId = `${idPrefix}-input`;
+  const helpId = `${idPrefix}-help`;
 
   return (
     <form
@@ -103,11 +128,11 @@ export function Composer({
           locked && "opacity-90",
         )}
       >
-        <label htmlFor="composer-input" className="sr-only">
+        <label htmlFor={inputId} className="sr-only">
           {disabledReason ?? "Ask a question about your documents"}
         </label>
         <textarea
-          id="composer-input"
+          id={inputId}
           ref={textareaRef}
           rows={1}
           value={value}
@@ -121,7 +146,7 @@ export function Composer({
               ? (disabledReason ?? "Unavailable")
               : "Ask a question about your documents…"
           }
-          aria-describedby="composer-help"
+          aria-describedby={helpId}
           className="placeholder:text-muted-foreground/70 max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 text-base outline-none disabled:cursor-not-allowed"
         />
 
@@ -145,7 +170,7 @@ export function Composer({
             </Tooltip>
           ) : null}
 
-          <p id="composer-help" className="text-muted-foreground text-2xs">
+          <p id={helpId} className="text-muted-foreground text-2xs">
             <kbd className="font-mono">Enter</kbd> to send ·{" "}
             <kbd className="font-mono">Shift</kbd>+
             <kbd className="font-mono">Enter</kbd> for a new line
@@ -153,6 +178,12 @@ export function Composer({
               {" "}
               · <kbd className="font-mono">/</kbd> to focus
             </span>
+            {onCancel ? (
+              <>
+                {" · "}
+                <kbd className="font-mono">Esc</kbd> to cancel
+              </>
+            ) : null}
           </p>
 
           {value.length > MAX_QUERY * 0.8 ? (
