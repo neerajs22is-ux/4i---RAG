@@ -55,9 +55,9 @@ import { DURATION, EASE } from "@/lib/motion";
  *
  * Polish (Pass E): the empty state inside a notebook reports the real source
  * scope and routes to the sources panel when nothing is included; the
- * transcript can jump back to the latest content after scrolling up; citation
- * markers and cited-source rows navigate to each other; `/` focuses the
- * composer. None of this adds backend behaviour or invents progress.
+ * transcript can jump back to the latest content after scrolling up; answer
+ * citation markers navigate directly to their supporting passage and back;
+ * `/` focuses the composer. None of this adds backend behaviour or invents progress.
  */
 
 type ChatItem =
@@ -75,18 +75,18 @@ type ChatItem =
 const PRINCIPLES = [
   {
     icon: ShieldCheck,
-    title: "Grounded or silent",
-    body: "Every claim traces to a retrieved passage. When the documents do not cover a question, the answer says so.",
+    title: "Answers from your documents",
+    body: "Questions are answered only from the documents in this workspace. If those documents do not cover a question, the answer says so instead of guessing.",
   },
   {
     icon: Quote,
-    title: "Citations you can open",
-    body: "Each citation carries the document, page and retrieval rank it came from.",
+    title: "Trace every claim to its source",
+    body: "Each citation names the document, page and retrieval rank it came from. Select a number in the answer to see its supporting source.",
   },
   {
     icon: FileText,
-    title: "Numbers kept honest",
-    body: "Amounts, dates and negations are checked against the evidence before anything is presented as fact.",
+    title: "Gaps and disagreements are flagged",
+    body: "When sources partly cover a question, disagree, or numbers and dates do not line up, the answer is labelled and the caution is shown.",
   },
 ];
 
@@ -420,13 +420,15 @@ export function ChatView({
                         return (
                           <StaggerItem
                             key={principle.title}
-                            className="hairline rounded-xl border p-4"
+                            className="rounded-xl border border-border bg-card p-4 shadow-sm"
                           >
-                            <Icon className="text-primary size-4" aria-hidden="true" />
-                            <h2 className="mt-2.5 text-sm font-medium">
+                            <span className="bg-primary/10 text-primary inline-flex size-7 items-center justify-center rounded-lg">
+                              <Icon className="size-4" aria-hidden="true" />
+                            </span>
+                            <h2 className="text-foreground mt-3 text-sm font-semibold">
                               {principle.title}
                             </h2>
-                            <p className="text-muted-foreground mt-1.5 text-xs text-pretty">
+                            <p className="text-muted-foreground mt-1.5 text-xs leading-relaxed text-pretty">
                               {principle.body}
                             </p>
                           </StaggerItem>
@@ -690,18 +692,18 @@ function NotebookFirstQuestion({
         {[
           {
             icon: ShieldCheck,
-            title: "Scoped to this space",
-            body: "Only the sources included here can support an answer. The backend resolves that set; the browser cannot widen it.",
+            title: "Only this space is used",
+            body: "Answers use only the sources you included here. Nothing outside this space contributes.",
           },
           {
             icon: Quote,
-            title: "Citations you can open",
-            body: "Every citation shows the document, page and retrieval rank — and links back to the marker in the answer.",
+            title: "Trace every claim to its source",
+            body: "Each citation names the document, page and retrieval rank. Select a number in the answer to see its supporting source.",
           },
           {
             icon: FileText,
-            title: "Grounded or silent",
-            body: "When the included sources do not cover a question, the answer says so instead of filling the gap.",
+            title: "Gaps are stated, not filled",
+            body: "When the included sources do not cover a question, the answer says so instead of guessing.",
           },
         ].map((item) => {
           const Icon = item.icon;

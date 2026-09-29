@@ -31,9 +31,34 @@ import { citationIndex, linkifyCitations } from "@/lib/chat/citations";
 type CitationHighlightValue = {
   /** Marker `n` to emphasise, or null. */
   marker: number | null;
-  /** Opens the answer's cited-sources list at source `n`. */
+  /** Navigates directly to supporting passage `n`. */
   onShowSource?: (n: number) => void;
 };
+
+/**
+ * Give repeated citations unique link targets.
+ *
+ * `linkifyCitations` rewrites every `[Sn]` to `[Sn](#cite-n)`. When the same
+ * citation appears several times those links would share one target id, so
+ * the first keeps `#cite-n` and later mentions become `#cite-n-2`,
+ * `#cite-n-3`, … . The renderer maps every variant back to citation `n`;
+ * only the DOM id differs. Pure string transform — stable across renders,
+ * so marker component identity (and focus) is preserved.
+ */
+export function withOccurrenceIds(linkified: string): string {
+  const seen = new Map<number, number>();
+  return String(linkified ?? "").replace(
+    /\(#cite-(\d+)\)/g,
+    (match, digits: string) => {
+      const n = Number(digits);
+      if (!Number.isFinite(n)) return match;
+      const count = (seen.get(n) ?? 0) + 1;
+      seen.set(n, count);
+      if (count === 1) return match;
+      return `(#cite-${n}-${count})`;
+    },
+  );
+}
 
 const CitationHighlightContext = createContext<CitationHighlightValue | null>(
   null,
@@ -75,14 +100,26 @@ function buildComponents(
   return {
     a({ href, children }) {
       if (typeof href === "string" && href.startsWith("#cite-")) {
-        const n = Number(href.slice("#cite-".length));
+        // `#cite-N` (first mention) or `#cite-N-K` (Kth mention of the same
+        // citation — see withOccurrenceIds). Both resolve to citation `n`;
+        // only the DOM id differs so repeated citations never share an id.
+        const rest = href.slice("#cite-".length);
+        const parts = rest.split("-");
+        const n = Number(parts[0]);
+        const occurrence = parts.length > 1 ? Number(parts[1]) : 1;
         if (Number.isFinite(n)) {
           const citation = citations.get(n);
+          const safeOccurrence =
+            Number.isFinite(occurrence) && occurrence > 1 ? occurrence : 1;
           return (
             <CitationMarkerBound
               n={n}
               citation={citation}
-              id={`marker-${scope}-${n}`}
+              id={
+                safeOccurrence === 1
+                  ? `marker-${scope}-${n}`
+                  : `marker-${scope}-${n}-${safeOccurrence}`
+              }
             />
           );
         }
@@ -179,13 +216,16 @@ export function AnswerContent({
   citations: AskCitation[];
   /** Unique per rendered answer — scopes marker ids and navigation targets. */
   scope: string;
-  /** Marker `n` to emphasise after arriving from the cited-sources list. */
+  /** Marker `n` to emphasise after arriving from the supporting-passage list. */
   highlightedMarker?: number | null;
-  /** Opens the answer's cited-sources list at source `n`. */
+  /** Navigates directly to supporting passage `n`. */
   onShowSource?: (n: number) => void;
 }) {
   const index = useMemo(() => citationIndex(citations), [citations]);
-  const markdown = useMemo(() => linkifyCitations(answer), [answer]);
+  const markdown = useMemo(
+    () => withOccurrenceIds(linkifyCitations(answer)),
+    [answer],
+  );
   const components = useMemo(
     () => buildComponents(index, scope),
     [index, scope],

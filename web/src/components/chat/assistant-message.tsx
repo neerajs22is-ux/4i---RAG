@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, FileText } from "lucide-react";
+import { ChevronDown, CornerUpLeft } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -13,12 +13,7 @@ import {
 } from "@/components/chat/answer-states";
 import { CopyButton } from "@/components/chat/copy-button";
 import type { AnswerView } from "@/lib/chat/answer-view";
-import {
-  citedOrder,
-  formatPageList,
-  formatPassageCount,
-  groupCitationsByDocument,
-} from "@/lib/chat/citations";
+import { citedOrder, citationLabel } from "@/lib/chat/citations";
 import { formatDuration } from "@/lib/format";
 import { DURATION, EASE } from "@/lib/motion";
 import { cn } from "cn";
@@ -27,15 +22,16 @@ import { cn } from "cn";
  * Assistant message — the primary reading surface.
  *
  * Hierarchy is carried by typography and whitespace rather than cards: a small
- * state header, the answer itself in markdown, optional state notes, a compact
- * cited-source list (metadata only), then a quiet action row with copy and a
- * provenance disclosure built from real timings.
+ * state header, the answer itself in markdown, optional state notes, one
+ * supporting-passage row per citation (metadata only), then a quiet action row
+ * with copy and a provenance disclosure built from real timings.
  *
- * Citations navigate in both directions: a marker's popover leads to the
- * matching row in the cited-sources list, and each row's marker chips lead back
- * to the marker in the answer. Both moves scroll the target into view, focus it
- * and give it a short emphasis — no passage text is implied, only the metadata
- * the backend returned.
+ * Citations navigate directly in both directions with no intermediate popup:
+ * selecting a number in the answer scrolls its supporting passage into view
+ * and highlights it, and each passage offers a single way back to the claim
+ * in the answer. Both moves scroll the target into view, focus it and give it
+ * a short emphasis — no passage text is implied, only the metadata the backend
+ * returned (document, page, retrieval rank, chunk id).
  *
  * Only freshly received answers animate in; a loaded transcript appears
  * immediately so opening a conversation never feels slow.
@@ -59,7 +55,9 @@ export function AssistantMessage({
   const isRefusal = view.label === "insufficient";
   const isConflict = view.state === "conflicting";
   const sources = citedOrder(view.answer, view.citations);
-  const sourceGroups = groupCitationsByDocument(sources);
+  const documentCount = new Set(
+    sources.map((citation) => citation.document_id || citation.file_name),
+  ).size;
   const hasProvenance = view.steps.length > 0 || Boolean(view.model);
 
   const prefersReducedMotion = useReducedMotion();
@@ -98,7 +96,7 @@ export function AssistantMessage({
   const showSource = useCallback(
     (n: number) => {
       pulse("source", n);
-      navigate(`source-chip-${scope}-${n}`);
+      navigate(`source-${scope}-${n}`);
     },
     [navigate, pulse, scope],
   );
@@ -106,6 +104,8 @@ export function AssistantMessage({
   const showMarker = useCallback(
     (n: number) => {
       pulse("marker", n);
+      // Repeated citations share one `n` but have unique marker ids; the
+      // first mention keeps the bare id, so returning always lands there.
       navigate(`marker-${scope}-${n}`);
     },
     [navigate, pulse, scope],
@@ -138,65 +138,87 @@ export function AssistantMessage({
         <GroundingCaution note={view.groundingNote} />
       ) : null}
 
-      {sourceGroups.length > 0 ? (
-        <div className="mt-3.5">
-          <p className="text-muted-foreground text-2xs font-medium tracking-wide uppercase">
-            Cited sources — {sourceGroups.length}{" "}
-            {sourceGroups.length === 1 ? "document" : "documents"}
-          </p>
-          <ul className="mt-1.5 space-y-2">
-            {sourceGroups.map((group) => {
-              const groupActive =
-                highlightedSource !== null &&
-                group.markers.includes(highlightedSource);
+      {sources.length > 0 ? (
+        <div className="mt-4">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <p className="text-muted-foreground text-2xs font-medium tracking-wide uppercase">
+              Supporting passages — {sources.length}{" "}
+              {sources.length === 1 ? "passage" : "passages"}
+            </p>
+            {documentCount > 0 ? (
+              <p className="text-muted-foreground/80 text-2xs">
+                from {documentCount}{" "}
+                {documentCount === 1 ? "document" : "documents"}
+              </p>
+            ) : null}
+          </div>
+          <ol className="mt-2 space-y-2">
+            {sources.map((citation) => {
+              const active = highlightedSource === citation.n;
               return (
                 <li
-                  key={group.documentId ?? group.fileName}
+                  key={citation.n}
+                  id={`source-${scope}-${citation.n}`}
+                  data-citation={citation.n}
+                  tabIndex={-1}
+                  aria-label={`Supporting passage ${citation.n}: ${citationLabel(citation)}`}
                   className={cn(
-                    "flex items-start gap-2 rounded-md transition-colors duration-[var(--duration-fast)]",
-                    groupActive && "bg-accent/50",
+                    "focus-visible:ring-ring/50 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
+                    active
+                      ? "border-primary/40 bg-accent shadow-sm"
+                      : "border-border bg-card",
                   )}
                 >
-                  <FileText
-                    className="text-muted-foreground/60 mt-0.5 size-3.5 shrink-0"
+                  <span
                     aria-hidden="true"
-                  />
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium break-words">
-                      {group.fileName}
+                    className={cn(
+                      "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md font-mono text-2xs",
+                      active
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-foreground",
+                    )}
+                  >
+                    {citation.n}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-foreground text-xs font-medium break-words">
+                      {citation.file_name}
                     </p>
-                    <p className="text-muted-foreground text-2xs">
-                      {formatPageList(group.pages)} ·{" "}
-                      {formatPassageCount(group.passages)}
+                    <p className="text-muted-foreground mt-0.5 font-mono text-2xs">
+                      {citation.page != null
+                        ? `p. ${citation.page}`
+                        : "No page reported"}{" "}
+                      ·{" "}
+                      {citation.fused_rank != null
+                        ? `rank ${citation.fused_rank}`
+                        : "rank —"}{" "}
+                      ·{" "}
+                      <span
+                        title={citation.chunk_id}
+                        className="break-all"
+                      >
+                        {citation.chunk_id
+                          ? `${citation.chunk_id.slice(0, 12)}…`
+                          : "—"}
+                      </span>
                     </p>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1">
-                      {group.markers.map((n) => {
-                        const active =
-                          highlightedSource !== null && highlightedSource === n;
-                        return (
-                          <button
-                            key={n}
-                            type="button"
-                            id={`source-chip-${scope}-${n}`}
-                            onClick={() => showMarker(n)}
-                            aria-label={`Source ${n}: show where it is cited in the answer`}
-                            className={cn(
-                              "focus-visible:ring-ring/50 rounded px-1 font-mono text-2xs transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
-                              active
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
-                            )}
-                          >
-                            [{n}]
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => showMarker(citation.n)}
+                      aria-label={`Back to where source ${citation.n} is cited in the answer`}
+                      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded text-2xs transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2"
+                    >
+                      <CornerUpLeft
+                        className="size-3"
+                        aria-hidden="true"
+                      />
+                      Back to claim [{citation.n}]
+                    </button>
                   </div>
                 </li>
               );
             })}
-          </ul>
+          </ol>
         </div>
       ) : null}
 
