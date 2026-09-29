@@ -14,19 +14,17 @@ import {
 import { CopyButton } from "@/components/chat/copy-button";
 import type { AnswerView } from "@/lib/chat/answer-view";
 import { citedOrder, citationLabel } from "@/lib/chat/citations";
-import { formatDuration } from "@/lib/format";
 import { DURATION, EASE } from "@/lib/motion";
 import { cn } from "cn";
 
 /**
  * Assistant message — the primary reading surface.
  *
- * Hierarchy is carried by typography and whitespace rather than cards: a small
- * state header, the answer itself in markdown, optional state notes, a
- * collapsible supporting-evidence disclosure (one tight row per citation:
- * document, page and the verbatim chunk excerpt when the backend provided
- * one), then a separated quiet action row with copy and a provenance
- * disclosure built from real timings.
+ * Reading order is answer first: a small state header, the answer itself on
+ * a quiet surface, optional state notes, a compact copy action, then the
+ * collapsible supporting-evidence disclosure (collapsed by default; one
+ * tight row per citation when open: document, page and the verbatim chunk
+ * excerpt when the backend provided one). Markers reopen it on demand.
  *
  * Citations navigate directly in both directions with no intermediate popup:
  * selecting a number in the answer opens the disclosure when collapsed,
@@ -41,8 +39,9 @@ import { cn } from "cn";
  * chunk ids stay in the data for citation identity and navigation but are
  * never rendered.
  *
- * Only freshly received answers animate in; a loaded transcript appears
- * immediately so opening a conversation never feels slow.
+ * Only freshly received answers animate in (one article-level reveal — the
+ * backend returns a completed response, so nothing streams); a loaded
+ * transcript appears immediately so opening a conversation never feels slow.
  */
 
 const HIGHLIGHT_MS = 2200;
@@ -69,7 +68,6 @@ export function AssistantMessage({
   const documentCount = new Set(
     sources.map((citation) => citation.document_id || citation.file_name),
   ).size;
-  const hasProvenance = view.steps.length > 0 || Boolean(view.model);
 
   const prefersReducedMotion = useReducedMotion();
   const [highlight, setHighlight] = useState<Highlight | null>(null);
@@ -77,11 +75,12 @@ export function AssistantMessage({
   /** Per-row excerpt expansion; collapsed rows clamp to one line. */
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   /**
-   * Evidence disclosure state. Open by default so established reading
-   * behavior is unchanged; the reader can collapse it to a single line and
-   * markers reopen it on demand.
+   * Evidence disclosure state. Collapsed by default so the answer itself is
+   * always the focus — including right after generation, because the first
+   * answer remounts as a stored transcript when the URL moves onto `/c/<id>`.
+   * Markers reopen it on demand either way.
    */
-  const [evidenceOpen, setEvidenceOpen] = useState(true);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
 
   const toggleExpanded = useCallback((n: number) => {
     setExpanded((prev) => {
@@ -167,6 +166,7 @@ export function AssistantMessage({
             scope={scope}
             highlightedMarker={highlightedMarker}
             onShowSource={showSource}
+            reveal={entrance}
           />
         )}
       </div>
@@ -176,6 +176,10 @@ export function AssistantMessage({
       {!isConflict && view.grounded === false && view.groundingNote ? (
         <GroundingCaution note={view.groundingNote} />
       ) : null}
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-1">
+        <CopyButton text={view.answer} />
+      </div>
 
       {sources.length > 0 ? (
         <div className="mt-3 border-t border-border/60 pt-1">
@@ -296,47 +300,6 @@ export function AssistantMessage({
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-1 border-t border-border/60 pt-3">
-        <CopyButton text={view.answer} />
-
-        {hasProvenance ? (
-          <details className="group/details">
-            <summary className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md px-1.5 py-1 text-2xs outline-none focus-visible:ring-2 [&::-webkit-details-marker]:hidden">
-              How this answer was made
-              <ChevronDown
-                className="size-3 transition-transform duration-[var(--duration-fast)] group-open/details:rotate-180"
-                aria-hidden="true"
-              />
-            </summary>
-            <dl className="text-muted-foreground mt-2 space-y-1 pl-1.5 font-mono text-2xs">
-              {view.steps.map((step) => (
-                <div key={step.label} className="flex justify-between gap-4">
-                  <dt>{step.label}</dt>
-                  <dd>{formatDuration(step.ms)}</dd>
-                </div>
-              ))}
-              {view.model ? (
-                <div className="flex justify-between gap-4">
-                  <dt>Model</dt>
-                  <dd className="max-w-[14rem] truncate" title={view.model}>
-                    {view.model}
-                  </dd>
-                </div>
-              ) : null}
-              {view.promptVersion ? (
-                <div className="flex justify-between gap-4">
-                  <dt>Prompt</dt>
-                  <dd>{view.promptVersion}</dd>
-                </div>
-              ) : null}
-            </dl>
-            <p className="text-muted-foreground/70 mt-1.5 max-w-md pl-1.5 text-2xs text-pretty">
-              Timings and model identification only. The service does not expose
-              model reasoning.
-            </p>
-          </details>
-        ) : null}
-      </div>
     </>
   );
 

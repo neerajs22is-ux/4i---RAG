@@ -343,6 +343,29 @@
   }
 }
 
+/* Progressive answer reveal (see components/chat/answer-reveal.tsx).
+   Applied only to fresh answers: each top-level Markdown block cascades in
+   with a delay from its `--reveal-i` index (capped in JS, so long answers
+   still finish in ~1.5 s). Opacity/transform only — layout never moves, and
+   the class is removed on completion, leaving the plain rendered answer. */
+.answer-reveal > * {
+  opacity: 0;
+  animation: answer-reveal-in var(--duration-normal) var(--ease-decelerate)
+    backwards;
+  animation-delay: calc(var(--reveal-i, 0) * 40ms);
+}
+
+@keyframes answer-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Reduced motion: kill decorative motion, keep opacity legibility. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -195,7 +195,9 @@ pass). VERIFIED for layout/responsive/unauthenticated behaviour.
 - Mobile: sidebar collapses into a drawer (`sheet`), reachable from the top bar.
 - `PageFrame` / `PageHeader` / `EmptyState` / loading skeletons / error
   boundaries give every route the same skeleton and states.
-- One scrolling region per page; sticky chrome; no nested scroll traps.
+- One scrolling region per page; sticky chrome; no nested scroll traps. On
+  chat routes the single region is the conversation scroller — the page shell
+  itself never scrolls there (see §8).
 
 ## 7. Chat
 
@@ -211,12 +213,30 @@ reload keeps the transcript → second conversation opens (§11).
 - **Markdown**: sanitized GFM only; every element maps onto design tokens.
   Element types are memoised and highlight state travels through context, so
   navigation never remounts a focused marker.
-- **Citations**: `[S1]`… are rewritten to in-page anchors (`linkifyCitations`)
-  and rendered as focusable markers opening a popover with document, page,
-  retrieval rank and chunk id. **Metadata only** — no passage text, no scores.
-  **Pass E**: the popover offers "Show in cited sources", which scrolls to and
-  focuses that marker's row in the answer's source list; each `[n]` chip in the
-  list navigates back to the marker in the text and focuses it.
+- **Citations**: `[S1]`… are rewritten to in-page anchors (`linkifyCitations`,
+  with occurrence suffixes so repeats get unique DOM ids) and rendered as
+  focusable `[n]` markers that navigate directly to the matching row in the
+  answer's source list — no popover, no intermediate step. Each row's number
+  badge navigates back to the first marker in the text. Both moves scroll the
+  target into view, focus it and briefly highlight it. Rows show the real
+  `/ask` metadata (document, page, retrieval rank) **plus the verbatim
+  retrieved excerpt** (`excerpt`, ask v51); chunk ids are kept in data but
+  never rendered. Rows without an excerpt (persisted before excerpts existed)
+  render metadata-only.
+- **Supporting evidence disclosure**: one compact collapsible section per
+  answer ("Supporting evidence — N sources · M documents", `aria-expanded`,
+  keyboard operable), collapsed by default so the answer holds focus. Clicking
+  a marker auto-opens it when collapsed. Long excerpts clamp with Show
+  more/less. No passage-text is ever invented: everything shown comes from
+  the persisted citation object.
+- **Answer reveal**: a fresh answer cascades in block-by-block
+  (`components/chat/answer-reveal.tsx` — CSS opacity/translate over the
+  already-rendered Markdown, ~40 ms stagger capped so even long answers finish
+  in ~1.5 s). Citation buttons stay real and interactive throughout; the final
+  DOM is identical to the static render. Stored transcripts, reloads and
+  remounts render instantly with no replay; reduced motion renders instantly;
+  any pointer/key/scroll interaction finishes it immediately. This animates
+  presentation only — `/ask` still returns one completed response (§10.5).
 - **Grounding**: four states — Supported / Partly supported / Sources disagree /
   Not enough evidence — plus a conflict note and the backend's own caution text;
   `N retrieved · M cited` is shown separately. Raw enum names, confidence
@@ -257,8 +277,9 @@ reload keeps the transcript → second conversation opens (§11).
   {grounding state}. N sources cited." when an answer arrives; the message is
   handed across the `/` → `/c/<id>` remount by a memory-only module
   (`lib/chat/announcement.ts`) and never replays.
-- **Provenance**: collapsible `<details>` exposing stage timings and the model
-  identifier for auditability.
+- **Provenance**: removed from the chat surface as visual noise — answers
+  carry a quiet Copy action only. Timings/model metadata remain in the API
+  response and are deliberately not rendered.
 
 ## 8. Documents and settings
 
@@ -316,12 +337,17 @@ Internal names remain `notebook*` (D56); the surfaces say Space.
   user's own `/ask` outcomes). Results are persisted with timestamps. The only
   offered recovery is "Retry this check" for backend/database/embeddings;
   Generation shows "Needs attention — no safe automatic fix". No reset exists.
+- **Single scroll context on chat routes** (`chat-view.tsx`): the
+  conversation scrolls only inside its own scroller (`data-chat-scroll`); the
+  scroll region's wrapper clips overflow so content height never propagates to
+  `main` (previously the page gained a second scrollbar). Other pages
+  (documents, notebooks, settings) scroll `main` normally; the fix is scoped
+  to the chat surface and changes no other route.
 - **Cited sources grouping** (`lib/chat/citations.ts` +
-  `assistant-message.tsx`): citations are grouped by document —
-  "Cited sources — N documents", file name, unique pages, supporting passage
-  count and the `[n]` markers — so one document with many chunks reads as one
-  source without hiding that several chunks supported the answer. Uses only the
-  real `/ask` metadata; no passage text and no scores.
+  `assistant-message.tsx`): superseded — citations render as one compact row
+  per source inside the Supporting evidence disclosure (see §7), each with
+  document, pinned page, verbatim excerpt and a badge back-link. Grouping
+  helpers remain in the lib unused by the UI.
 - **Typography scale** (`src/app/globals.css`): one global `@theme` scale
   (2xs 12 · xs 13 · sm 15 · base 17 · lg 19 · xl 22 · 2xl 26 px …), with the chat
   reading surface at `text-base` (17 px) and answer headings stepped up to keep
@@ -350,15 +376,17 @@ These follow from the locked backend; violating them would make the UI lie.
 
 1. **No direct provider calls** — Mantle/Voyage are reachable only through Edge
    Functions.
-2. **No fabricated evidence** — citations show only metadata the backend
-   actually returned. Passage text arrives only if the backend starts returning
-   it (§11).
+2. **No fabricated evidence** — citations show only what the backend
+   actually returned: metadata plus the verbatim retrieved excerpt (ask v51).
+   Pre-excerpt rows render metadata-only rather than inventing text (§11).
 3. **No invented scores or confidence** — no similarity numbers, no percentages,
    no source-authority ratings.
 4. **No reasoning/CoT surface** — the backend strips model thinking before
    responding; there is nothing to display.
 5. **No streaming theatre** — `/ask` is non-streaming and persists before
    responding, so there are no honest stages and cancellation cannot be honest.
+   The answer-reveal animation (§7) presents an already-completed response and
+   must never imply a live stream or delay it.
 6. **No mocks presented as validation** — mocks are acceptable for local
    development only, never as evidence that a pass works.
 7. **No hidden model/provider switching** — the UI never chooses or substitutes
@@ -378,7 +406,7 @@ These follow from the locked backend; violating them would make the UI lie.
 | `/showcase` unaffected by shell/gating work | VERIFIED | Pass 3B report |
 | **Signed-in E2E: sign-in → workspace → ask → answer/citations/grounding → reload → second conversation** | **VERIFIED** | real browser (Chrome via CDP) with `test@rag.com`: answer rendered, grounding "Supported", 8 cited sources, transcript survived reload, second conversation opened; 0 console errors |
 | Post-3B UI fixes (typography scale, Previous chats, collapsed rail, system health, cited-source grouping) | VERIFIED | tsc/eslint/build clean; measured at 390/768/1440 px in both themes; 0 overflow, 0 console errors |
-| Evidence rail / conflict comparison | DEFERRED | needs evidence text from `/ask` (no longer an architecture blocker; not scheduled) |
+| Evidence rail / conflict comparison | IMPLEMENTED as the Supporting evidence disclosure | ask v51 returns verbatim excerpts; each answer carries a collapsible per-source list with direct marker ↔ row navigation (D80) |
 | Conversation rename/delete | DEFERRED | no supported backend mutation API |
 | `/showcase` removal from the product build | PENDING | dev QA route still present |
 | Spaces: list/create/rename/delete, source attach/remove, selection toggle | **VERIFIED** | live browser + API validation, 22 checks (5 API / 10 rendering / 7 cleanup-integrity); scoped `/ask` answers from selected sources and refuses with `no-selected-sources` when none are included |
@@ -392,6 +420,7 @@ These follow from the locked backend; violating them would make the UI lie.
 | Polish-pass screenshots | VERIFIED | `%TEMP%\rag4i-polish-shots\space-{390,768,1440}-{light,dark}.png`, `drawer-1440-light.png`, `mobile-nav-390.png`; raw checks archived at `eval/runs/ui-polish-spaces-sidebar-results-20260917.json` (report: `eval/runs/ui-polish-spaces-sidebar.md`) |
 | **Temporary-file pass (D60/D61)** — composer attach, conversation strip (processing → ready → expired), promote, remove | **VERIFIED** | live Chrome/CDP with the real account and a real 1-page PDF: 30/30 checks, 0 console errors; `ingest-temp` payload carried only `action`/`tenant_id`/`storage_path`/`file_name`/`conversation_id`; real worker state showed "Processing · 1 passages left" → "Ready"; scoped `/ask` cited `lease.pdf` ("36 months"); reload kept transcript + strip; `/documents` excluded the file until **Save to workspace** and listed it after; document deleted and production restored to 2 documents / 0 temporary rows; 0 horizontal overflow at 390 px |
 | Temporary-file pass evidence | VERIFIED | `%TEMP%\rag4i-temp-files-shots\` (4 screenshots + `results.json`); report: `eval/runs/ui-temporary-chat-files.md` |
+| **Chat layout + answer reveal** (single scroll context, Copy-only actions, answer card, collapsed-by-default evidence, `AnswerReveal` block cascade) | IMPLEMENTED + locally VERIFIED, uncommitted | `tsc`/`eslint`/`next build` clean; live local prod build: fresh answers reveal progressively and settle <2 s with identical final DOM, `/`→`/c` remount replays once via the announcement-module handoff (no replay on reload), collapsed default holds, marker/badge navigation + repeats + themes + 390 px + reload all pass, 0 console errors; probe conversations deleted |
 
 ## 12. Pending and deferred work
 
@@ -406,11 +435,13 @@ These follow from the locked backend; violating them would make the UI lie.
   Backend, Database, Embeddings and Generation. Storage (bucket reachability +
   budget) requires no architectural change and was designed in the Pass 4 audit;
   not implemented.
-- **DEFERRED — evidence workspace (was "Pass 3C").** `/ask` still returns citation
-  metadata only, so the evidence rail/conflict comparison cannot be built
-  honestly yet; it needs the additive evidence-text change.
-- **DEFERRED — conversation rename/delete.** Only if a backend API appears.
+- **DONE — evidence workspace (was "Pass 3C", D80).** `/ask` v51 returns a
+  verbatim excerpt per citation; the UI shows it in the Supporting evidence
+  disclosure. The conflict-comparison view was never built and is not
+  scheduled.
 - **DEFERRED — streaming/live citations.** Requires a backend streaming change.
+  The answer-reveal animation (§7) is presentation-only and must not be read
+  as streaming.
 - **DEFERRED — document download / archive UI.** `archived_at` exists (D49) but
   no UI; download would count against egress.
 - **PENDING — remove or relocate `/showcase`.**

@@ -35,7 +35,9 @@ import { listMessages } from "@/lib/api/conversations";
 import { viewFromResponse, viewFromStored, type AnswerView } from "@/lib/chat/answer-view";
 import {
   setPendingAnnouncement,
+  setPendingFreshConversation,
   takePendingAnnouncement,
+  takePendingFreshConversation,
 } from "@/lib/chat/announcement";
 import { invalidateConversations } from "@/lib/chat/conversations-store";
 import { recordAskOutcome } from "@/lib/health";
@@ -184,11 +186,26 @@ export function ChatView({
     listMessages(conversationId)
       .then((rows: MessageRow[]) => {
         if (cancelled) return;
+        // A just-finished first answer handed its announcement and its fresh
+        // entrance across the `/` → `/c/<id>` mount (see
+        // lib/chat/announcement.ts). Only the remounted transcript's last
+        // assistant message animates, and only once — later loads find the
+        // slot empty and render statically.
+        const freshConversation = takePendingFreshConversation();
+        const freshRow =
+          freshConversation === conversationId
+            ? [...rows].reverse().find((row) => row.role !== "user") ?? null
+            : null;
         setItems(
           rows.map((row) =>
             row.role === "user"
               ? { kind: "user" as const, id: row.id, content: row.content }
-              : { kind: "answer" as const, id: row.id, view: viewFromStored(row) },
+              : {
+                  kind: "answer" as const,
+                  id: row.id,
+                  view: viewFromStored(row),
+                  entrance: freshRow !== null && row.id === freshRow.id,
+                },
           ),
         );
         // A just-finished first answer handed its announcement across the
@@ -330,8 +347,11 @@ export function ChatView({
           if (!notebookId) {
             // Persistence completes before the response, so the reloaded
             // transcript on /c/<id> is the same content, now read from the store.
-            // The remount would drop the announcement, so hand it over.
+            // The remount would drop the announcement, so hand it over — along
+            // with the fresh entrance, so the reveal runs on the transcript
+            // instead of dying with the pre-remount tree.
             setPendingAnnouncement(announcement);
+            setPendingFreshConversation(response.conversation_id);
             router.replace(`/c/${response.conversation_id}`, { scroll: false });
           } else {
             setAnnouncement(announcement);
@@ -373,7 +393,13 @@ export function ChatView({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="relative min-h-0 flex-1">
+      {/*
+       * Overflow is clipped here (not on `main`, which other pages need for
+       * scrolling): the conversation scroller's content height otherwise
+       * propagates through visible-overflow ancestors and gives the page a
+       * second scrollbar. The composer footer stays outside the clip.
+       */}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollerRef}
           onScroll={handleScroll}
@@ -457,7 +483,7 @@ export function ChatView({
             ) : null}
 
             {!loading && !loadError && items.length > 0 ? (
-              <ol className="space-y-7">
+              <ol className="space-y-8">
                 {items.map((item) => (
                   <li key={item.id}>
                     {item.kind === "user" ? (
@@ -536,7 +562,7 @@ export function ChatView({
       </div>
 
       <div className="bg-background/85 hairline shrink-0 border-t backdrop-blur">
-        <div className="mx-auto w-full max-w-3xl px-5 py-4 sm:px-8">
+        <div className="mx-auto w-full max-w-3xl px-5 py-5 sm:px-8">
           {notebookId ? (
             <div className="mb-2.5 flex min-w-0 items-center gap-2">
               <LayersIcon className="text-muted-foreground size-3.5 shrink-0" aria-hidden="true" />

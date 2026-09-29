@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
 import { CitationMarker } from "@/components/chat/citation-marker";
+import { AnswerReveal } from "@/components/chat/answer-reveal";
 import type { AskCitation } from "@/lib/api/types";
 import { citationIndex, linkifyCitations } from "@/lib/chat/citations";
 
@@ -136,7 +137,7 @@ function buildComponents(
       );
     },
     p: ({ children }) => (
-      <p className="my-2.5 leading-relaxed text-pretty">{children}</p>
+      <p className="my-3 leading-relaxed text-pretty first:mt-1 last:mb-1">{children}</p>
     ),
     h1: ({ children }) => (
       <h3 className="mt-5 mb-2 text-lg font-semibold tracking-tight">{children}</h3>
@@ -151,12 +152,12 @@ function buildComponents(
       <h4 className="mt-4 mb-1.5 text-base font-semibold">{children}</h4>
     ),
     ul: ({ children }) => (
-      <ul className="my-2.5 ml-4 list-disc space-y-1.5 marker:text-muted-foreground">
+      <ul className="my-3 ml-4 list-disc space-y-2 marker:text-muted-foreground">
         {children}
       </ul>
     ),
     ol: ({ children }) => (
-      <ol className="my-2.5 ml-4 list-decimal space-y-1.5 marker:text-muted-foreground">
+      <ol className="my-3 ml-4 list-decimal space-y-2 marker:text-muted-foreground">
         {children}
       </ol>
     ),
@@ -211,6 +212,7 @@ export function AnswerContent({
   scope,
   highlightedMarker = null,
   onShowSource,
+  reveal = false,
 }: {
   answer: string;
   citations: AskCitation[];
@@ -220,6 +222,11 @@ export function AnswerContent({
   highlightedMarker?: number | null;
   /** Navigates directly to source row `n`. */
   onShowSource?: (n: number) => void;
+  /**
+   * Progressive reveal for newly generated answers only. Stored transcripts
+   * pass false (or omit) and render the final answer immediately.
+   */
+  reveal?: boolean;
 }) {
   const index = useMemo(() => citationIndex(citations), [citations]);
   const markdown = useMemo(
@@ -237,14 +244,21 @@ export function AnswerContent({
 
   return (
     <CitationHighlightContext.Provider value={highlight}>
-      <div className="text-base">
-        <Markdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
-          components={components}
-        >
-          {markdown}
-        </Markdown>
+      {/*
+       * One quiet surface for the answer body so the question, the answer
+       * and the evidence read as three distinct bands. Evidence rows and
+       * actions intentionally stay chrome-less.
+       */}
+      <div className="bg-card hairline rounded-xl border px-4 py-3 text-base shadow-xs">
+        <AnswerReveal run={reveal}>
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize]}
+            components={components}
+          >
+            {markdown}
+          </Markdown>
+        </AnswerReveal>
       </div>
     </CitationHighlightContext.Provider>
   );
