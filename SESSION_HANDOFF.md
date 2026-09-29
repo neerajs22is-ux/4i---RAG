@@ -7,10 +7,11 @@ chat, upload), Pass E (chat polish), the Spaces/sidebar polish pass and the
 temporary-file pass (D60, chat-surface attach/promote, 30/30 live checks) built,
 validated and exercised in production; the visual review pass NOT started.**
 Since then: citation excerpts deployed (`ask` v51, verified 7/7 verbatim +
-persisted); citation UX shipped twice (`4699f9c` direct marker↔row navigation,
-`1f16902` compact rows + excerpts + `[n]` — both live on Vercel); a collapsible
-Supporting-evidence disclosure is implemented and locally verified (16/16),
-awaiting checkpoint commit (this pass).
+persisted); citation UX shipped three times (`4699f9c` direct marker↔row
+navigation, `1f16902` compact rows + excerpts + `[n]`, `d27b057` collapsible
+Supporting-evidence disclosure — all live on Vercel); a badge return-to-claim
+refinement (1-line excerpts, meta line removed) is implemented and locally
+verified, awaiting commit authorization.
 
 ---
 
@@ -165,13 +166,18 @@ normal use; treat these numbers as a dated snapshot, not a constant.
 - **Citation UX v2 (`1f16902`, live on Vercel)** — compact divide-y rows,
   verbatim excerpts with Show more/less, chunk ids unrendered, rank subtle;
   verified with excerpt mapping + backwards-compat reload.
-- **Evidence disclosure (uncommitted, this pass)** — collapsible "Supporting
+- **Evidence disclosure (`d27b057`, live on Vercel)** — collapsible "Supporting
   evidence" header (`N sources · M documents`, `aria-expanded`), marker click
   auto-opens when collapsed, filename truncation with full title, rank as
   hover-only metadata, user-facing "evidence/sources" (ingestion "passages"
   kept where technically accurate). Locally verified 16/16 (collapse
   717px→34px, keyboard toggle, auto-open nav, repeats, clamp-2, dark, 390px,
   reload, 0 console errors); test conversation deleted.
+- **Badge return refinement (uncommitted, this pass)** — the row number badge
+  is the return-to-claim button; the "Retrieved source · Back to claim [n]"
+  meta line is removed; rank survives only as badge hover title; collapsed
+  excerpts clamp to 1 line (rows ~52–73px); excerpt text stays selectable.
+  Verified locally (lint/tsc/build + browser); commit not yet authorized.
 
 ## 5. Frontend state
 
@@ -208,8 +214,9 @@ remaining UI work.**
 **Citation UX (current):** direct `[n]` marker ↔ evidence-row navigation with
 focus/highlight, unique occurrence IDs for repeats, no popup/loop
 (`4699f9c`); compact rows with verbatim excerpts + Show more/less, no chunk
-ids, subtle rank (`1f16902`); collapsible "Supporting evidence" disclosure
-(uncommitted, verified locally 16/16). Frontend `1f16902` is live on Vercel
+ids (`1f16902`); collapsible "Supporting evidence" disclosure with badge
+return-to-claim and 1-line excerpt previews (`d27b057` + uncommitted badge
+refinement, this pass). Frontend `d27b057` is live on Vercel
 (`https://4i-rag.vercel.app/`). Backend excerpts live in `ask` v51 (D80).
 
 **Upload-failure diagnosis (2026-09-17):** the reported "could not be
@@ -424,37 +431,31 @@ each pass (D53).
 
 ## 9. Git / deployment state
 
-- Branch `main`, **HEAD `1f16902`** (citation UI checkpoints `4699f9c`,
-  `1f16902` committed and pushed; Vercel serves `1f16902`).
-- **Uncommitted (tracked, this pass):** `ARCHITECTURE.md`, `DECISIONS.md`,
-  `SESSION_HANDOFF.md` (D80 documentation reconciliation);
-  `supabase/functions/ask/index.ts` (excerpt construction, deployed as v51);
-  `web/` evidence-disclosure + terminology files (`assistant-message.tsx`,
-  `citation-marker.tsx`, `chat-view.tsx`, `auth-gate.tsx`, `settings/page.tsx`,
-  `evidence-status.tsx`, `presentation.ts`).
-- **Untracked (new, this pass):**
-  `supabase/functions/_shared/citation-sources.ts` (+ `_test.ts`; deployed
-  inside `ask` v51).
+- Branch `main`, **HEAD `d27b057`** (citation checkpoints `4699f9c`,
+  `1f16902`, `d27b057` committed and pushed; Vercel serves `d27b057`).
+- **Uncommitted (tracked, this pass):** `DECISIONS.md` (D80 frontend-clause
+  accuracy), `SESSION_HANDOFF.md` (this state pass),
+  `web/src/components/chat/assistant-message.tsx` (badge return-to-claim
+  refinement). Commit NOT authorized yet.
 - **Untracked (pre-existing, leave alone):** `brag-output*/`, `deno.lock`,
   `eval/cases/followup_*` golds, `supabase/functions/_shared/evidence-reuse*.ts`
   (H3C-B history, unwired), `super-video-maker-skill/`.
-- Backend functions are **deployed** (versions in §3; `ask` v51 carries the
-  uncommitted excerpt source — the checkpoint commit reconciles source with
-  production); the frontend `1f16902` is **deployed on Vercel**.
+- Backend functions are **deployed** (versions in §3; `ask` v51 source was
+  reconciled in `d27b057`); the frontend `d27b057` is **deployed on Vercel**.
 - Test account `test@rag.com` is RETIRED — forget it fully. Working admin
   account is `neeraj2016year@gmail.com` (role admin); password in the Windows
   Credential Manager target `RAG4I_test_user` (read via `eval/wincred.py` as
   `{"email","password"}` JSON). Never print or commit it.
-- **Preflight snapshot (verified 2026-09-29, D59):** HEAD `1f16902`; working
-  tree holds the D80 checkpoint candidates only (plus the pre-existing items
-  above); the CLI (v2.117.0) is authenticated (Owner account; `functions list`
-  works) and the project is linked to `uqlpfgtkmsaexmtieulp`; deployed:
-  `ingest-pdf` **v37** · `embed-worker` **v36** · `query-chunks` **v36** ·
-  `ask` **v51** · `storage-cleanup` **v4**, all ACTIVE; production Q/A smoke
-  tests create real conversations — delete them afterwards via PostgREST
-  (verified working: DELETE 204 + zero messages remain). Re-establish this
-  snapshot at the start of a substantial session and immediately before any
-  mutation.
+- **Preflight snapshot (verified 2026-09-29, D59):** HEAD `d27b057`; working
+  tree holds one uncommitted refinement (`assistant-message.tsx` badge return)
+  plus this doc pass — commit NOT authorized; the CLI (v2.117.0) is
+  authenticated (Owner account; `functions list` works) and the project is
+  linked to `uqlpfgtkmsaexmtieulp`; deployed: `ingest-pdf` **v37** ·
+  `embed-worker` **v36** · `query-chunks` **v36** · `ask` **v51** ·
+  `storage-cleanup` **v4**, all ACTIVE; production Q/A smoke tests create real
+  conversations — delete them afterwards via PostgREST (verified working:
+  DELETE 204 + zero messages remain). Re-establish this snapshot at the start
+  of a substantial session and immediately before any mutation.
 
 ## 10. Important files
 

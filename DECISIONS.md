@@ -1465,10 +1465,10 @@ D80. Citation excerpts + compact supporting-evidence UI (deployed ask v51)
   `_shared/citation-sources.ts` (+5 unit tests). The same array feeds the
   response `citations` and the persisted `messages.sources` (JSONB, no schema
   change). The frontend shows each excerpt in a compact collapsible
-  "Supporting evidence" disclosure (document + page primary, 2-line clamped
-  quote, retrieval rank demoted to hover metadata, single subtle "Back to
-  claim [n]"), with direct marker ↔ row navigation, unique occurrence IDs, no
-  popup and no navigation loop. User-facing copy says "evidence"/"sources";
+  "Supporting evidence" disclosure (document + page primary, 1-line clamped
+  quote, retrieval rank kept to badge hover metadata, the number badge itself
+  returning to the claim), with direct marker ↔ row navigation, unique
+  occurrence IDs, no popup and no navigation loop. User-facing copy says "evidence"/"sources";
   ingestion chunk-progress copy keeps "passages" where it is technically
   accurate (embedding units, not cited evidence).
 - Status: ACTIVE / DEPLOYED (`ask` **v51**, no other function touched) and

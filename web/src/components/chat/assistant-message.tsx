@@ -24,15 +24,16 @@ import { cn } from "cn";
  * Hierarchy is carried by typography and whitespace rather than cards: a small
  * state header, the answer itself in markdown, optional state notes, a
  * collapsible supporting-evidence disclosure (one tight row per citation:
- * document, page, the verbatim chunk excerpt when the backend provided one,
- * and quiet return-to-claim metadata), then a separated quiet action row
- * with copy and a provenance disclosure built from real timings.
+ * document, page and the verbatim chunk excerpt when the backend provided
+ * one), then a separated quiet action row with copy and a provenance
+ * disclosure built from real timings.
  *
  * Citations navigate directly in both directions with no intermediate popup:
  * selecting a number in the answer opens the disclosure when collapsed,
- * scrolls its evidence row into view and highlights it, and each row offers
- * a single subtle way back to the claim in the answer. Both moves scroll the
- * target into view, focus it and give it a short emphasis.
+ * scrolls its evidence row into view and highlights it, and each row's
+ * number badge returns to the claim in the answer (the excerpt text itself
+ * stays selectable). Both moves scroll the target into view, focus it and
+ * give it a short emphasis.
  *
  * The backend returns citation metadata plus a verbatim excerpt of the exact
  * retrieved chunk (or no excerpt on rows persisted before excerpts existed,
@@ -73,7 +74,7 @@ export function AssistantMessage({
   const prefersReducedMotion = useReducedMotion();
   const [highlight, setHighlight] = useState<Highlight | null>(null);
   const highlightTimer = useRef<number | null>(null);
-  /** Per-row excerpt expansion; collapsed rows clamp to two lines. */
+  /** Per-row excerpt expansion; collapsed rows clamp to one line. */
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   /**
    * Evidence disclosure state. Open by default so established reading
@@ -227,17 +228,24 @@ export function AssistantMessage({
                     active && "-mx-1.5 rounded-md bg-accent px-1.5",
                   )}
                 >
-                  <span
-                    aria-hidden="true"
+                  <button
+                    type="button"
+                    onClick={() => showMarker(citation.n)}
+                    aria-label={`Back to where source ${citation.n} is cited in the answer`}
+                    title={
+                      citation.fused_rank != null
+                        ? `Retrieved at rank ${citation.fused_rank}`
+                        : `Source ${citation.n}`
+                    }
                     className={cn(
-                      "inline-flex size-5 shrink-0 items-center justify-center rounded font-mono text-2xs",
+                      "focus-visible:ring-ring/50 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent font-mono text-2xs transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
                       active
                         ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-foreground",
+                        : "bg-muted text-foreground hover:border-primary/40 hover:text-primary",
                     )}
                   >
                     {citation.n}
-                  </span>
+                  </button>
                   <div className="min-w-0 flex-1 leading-tight">
                     <p className="flex min-w-0 items-baseline gap-1 text-xs">
                       <span
@@ -257,50 +265,27 @@ export function AssistantMessage({
                       <blockquote
                         className={cn(
                           "border-border text-foreground/80 mt-1 border-l-2 pl-2 text-xs break-words whitespace-pre-wrap",
-                          !isOpen && "line-clamp-2",
+                          !isOpen && "line-clamp-1",
                         )}
                       >
                         {excerpt}
                       </blockquote>
                     ) : null}
-                    <p className="text-muted-foreground/70 mt-0.5 text-2xs">
-                      <span
-                        title={
-                          citation.fused_rank != null
-                            ? `Retrieved at rank ${citation.fused_rank}`
-                            : undefined
-                        }
-                      >
-                        Retrieved source
-                      </span>
-                      {" · "}
-                      {collapsible ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => toggleExpanded(citation.n)}
-                            aria-expanded={isOpen}
-                            aria-label={
-                              isOpen
-                                ? `Collapse excerpt for source ${citation.n}`
-                                : `Expand excerpt for source ${citation.n}`
-                            }
-                            className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
-                          >
-                            {isOpen ? "Show less" : "Show more"}
-                          </button>
-                          {" · "}
-                        </>
-                      ) : null}
+                    {collapsible ? (
                       <button
                         type="button"
-                        onClick={() => showMarker(citation.n)}
-                        aria-label={`Back to where source ${citation.n} is cited in the answer`}
-                        className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
+                        onClick={() => toggleExpanded(citation.n)}
+                        aria-expanded={isOpen}
+                        aria-label={
+                          isOpen
+                            ? `Collapse excerpt for source ${citation.n}`
+                            : `Expand excerpt for source ${citation.n}`
+                        }
+                        className="text-muted-foreground/70 hover:text-foreground focus-visible:ring-ring/50 mt-0.5 cursor-pointer rounded text-2xs underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
                       >
-                        Back to claim [{citation.n}]
+                        {isOpen ? "Show less" : "Show more"}
                       </button>
-                    </p>
+                    ) : null}
                   </div>
                 </li>
               );
