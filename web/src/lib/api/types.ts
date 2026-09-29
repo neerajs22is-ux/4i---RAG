@@ -49,6 +49,13 @@ export type AskCitation = {
   page: number | null;
   fused_rank?: number | null;
   fused_score?: number | null;
+  /**
+   * Verbatim excerpt of the exact retrieved chunk behind this citation, added
+   * by the ask pipeline (see supabase/functions/_shared/citation-sources.ts).
+   * Absent (undefined/null) on rows persisted before excerpts existed — those
+   * rows remain renderable without it.
+   */
+  excerpt?: string | null;
 };
 
 export type AskTimings = {
@@ -190,6 +197,8 @@ export type MessageSource = {
   page?: number | null;
   fused_rank?: number | null;
   fused_score?: number | null;
+  /** Persisted excerpt; absent on rows written before excerpts existed. */
+  excerpt?: string | null;
 };
 
 export type MessageRow = {

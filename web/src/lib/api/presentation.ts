@@ -121,7 +121,9 @@ export function stateForLabel(label: string | null): EvidenceState | null {
 
 /**
  * Persisted messages store citation metadata in `sources`; the live response
- * uses the same fields under `citations`. One shape for the UI.
+ * uses the same fields under `citations`. One shape for the UI. The excerpt,
+ * when present, passes through untouched; rows written before excerpts
+ * existed surface a null excerpt and render without one.
  */
 export function citationsFromSources(sources: MessageSource[]): AskCitation[] {
   return (sources ?? [])
@@ -134,6 +136,7 @@ export function citationsFromSources(sources: MessageSource[]): AskCitation[] {
       page: s.page ?? null,
       fused_rank: s.fused_rank ?? null,
       fused_score: s.fused_score ?? null,
+      excerpt: typeof s.excerpt === "string" ? s.excerpt : null,
     }));
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, CornerUpLeft } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -22,22 +22,32 @@ import { cn } from "cn";
  * Assistant message — the primary reading surface.
  *
  * Hierarchy is carried by typography and whitespace rather than cards: a small
- * state header, the answer itself in markdown, optional state notes, one
- * supporting-passage row per citation (metadata only), then a quiet action row
- * with copy and a provenance disclosure built from real timings.
+ * state header, the answer itself in markdown, optional state notes, a compact
+ * source list (one tight row per citation: document, page, the verbatim
+ * chunk excerpt when the backend provided one, and retrieval rank as subtle
+ * metadata), then a quiet action row with copy and a provenance disclosure
+ * built from real timings.
  *
  * Citations navigate directly in both directions with no intermediate popup:
- * selecting a number in the answer scrolls its supporting passage into view
- * and highlights it, and each passage offers a single way back to the claim
- * in the answer. Both moves scroll the target into view, focus it and give it
- * a short emphasis — no passage text is implied, only the metadata the backend
- * returned (document, page, retrieval rank, chunk id).
+ * selecting a number in the answer scrolls its source row into view and
+ * highlights it, and each row offers a single way back to the claim in the
+ * answer. Both moves scroll the target into view, focus it and give it a
+ * short emphasis.
+ *
+ * The backend returns citation metadata plus a verbatim excerpt of the exact
+ * retrieved chunk (or no excerpt on rows persisted before excerpts existed,
+ * which render without one) — nothing is invented or paraphrased. Internal
+ * chunk ids stay in the data for citation identity and navigation but are
+ * never rendered.
  *
  * Only freshly received answers animate in; a loaded transcript appears
  * immediately so opening a conversation never feels slow.
  */
 
 const HIGHLIGHT_MS = 2200;
+
+/** Excerpts longer than this get a collapsed Show more/less treatment. */
+const EXCERPT_COLLAPSE_AT = 280;
 
 type Highlight = { target: "marker" | "source"; n: number };
 
@@ -63,6 +73,17 @@ export function AssistantMessage({
   const prefersReducedMotion = useReducedMotion();
   const [highlight, setHighlight] = useState<Highlight | null>(null);
   const highlightTimer = useRef<number | null>(null);
+  /** Per-row excerpt expansion; collapsed rows clamp to three lines. */
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  const toggleExpanded = useCallback((n: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  }, []);
 
   const pulse = useCallback((target: Highlight["target"], n: number) => {
     setHighlight({ target, n });
@@ -139,40 +160,35 @@ export function AssistantMessage({
       ) : null}
 
       {sources.length > 0 ? (
-        <div className="mt-4">
-          <div className="flex flex-wrap items-baseline gap-x-2">
-            <p className="text-muted-foreground text-2xs font-medium tracking-wide uppercase">
-              Supporting passages — {sources.length}{" "}
-              {sources.length === 1 ? "passage" : "passages"}
-            </p>
-            {documentCount > 0 ? (
-              <p className="text-muted-foreground/80 text-2xs">
-                from {documentCount}{" "}
-                {documentCount === 1 ? "document" : "documents"}
-              </p>
-            ) : null}
-          </div>
-          <ol className="mt-2 space-y-2">
+        <div className="mt-3">
+          <p className="text-muted-foreground text-2xs font-medium tracking-wide uppercase">
+            Sources — {sources.length}{" "}
+            {sources.length === 1 ? "passage" : "passages"} ·{" "}
+            {documentCount} {documentCount === 1 ? "document" : "documents"}
+          </p>
+          <ol className="divide-border/70 mt-1 divide-y">
             {sources.map((citation) => {
               const active = highlightedSource === citation.n;
+              const excerpt = citation.excerpt ?? null;
+              const isOpen = expanded.has(citation.n);
+              const collapsible =
+                excerpt !== null && excerpt.length > EXCERPT_COLLAPSE_AT;
               return (
                 <li
                   key={citation.n}
                   id={`source-${scope}-${citation.n}`}
                   data-citation={citation.n}
                   tabIndex={-1}
-                  aria-label={`Supporting passage ${citation.n}: ${citationLabel(citation)}`}
+                  aria-label={`Source ${citation.n}: ${citationLabel(citation)}`}
                   className={cn(
-                    "focus-visible:ring-ring/50 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
-                    active
-                      ? "border-primary/40 bg-accent shadow-sm"
-                      : "border-border bg-card",
+                    "focus-visible:ring-ring/50 flex items-start gap-2 py-1.5 transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2",
+                    active && "-mx-1.5 rounded-md bg-accent px-1.5",
                   )}
                 >
                   <span
                     aria-hidden="true"
                     className={cn(
-                      "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md font-mono text-2xs",
+                      "inline-flex size-5 shrink-0 items-center justify-center rounded font-mono text-2xs",
                       active
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted text-foreground",
@@ -180,40 +196,57 @@ export function AssistantMessage({
                   >
                     {citation.n}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-foreground text-xs font-medium break-words">
-                      {citation.file_name}
-                    </p>
-                    <p className="text-muted-foreground mt-0.5 font-mono text-2xs">
-                      {citation.page != null
-                        ? `p. ${citation.page}`
-                        : "No page reported"}{" "}
-                      ·{" "}
-                      {citation.fused_rank != null
-                        ? `rank ${citation.fused_rank}`
-                        : "rank —"}{" "}
-                      ·{" "}
-                      <span
-                        title={citation.chunk_id}
-                        className="break-all"
-                      >
-                        {citation.chunk_id
-                          ? `${citation.chunk_id.slice(0, 12)}…`
-                          : "—"}
+                  <div className="min-w-0 flex-1 leading-tight">
+                    <p className="text-foreground truncate text-xs">
+                      <span className="font-medium">{citation.file_name}</span>{" "}
+                      <span className="text-muted-foreground">
+                        ·{" "}
+                        {citation.page != null
+                          ? `p. ${citation.page}`
+                          : "page not reported"}
                       </span>
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => showMarker(citation.n)}
-                      aria-label={`Back to where source ${citation.n} is cited in the answer`}
-                      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded text-2xs transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2"
-                    >
-                      <CornerUpLeft
-                        className="size-3"
-                        aria-hidden="true"
-                      />
-                      Back to claim [{citation.n}]
-                    </button>
+                    {excerpt !== null ? (
+                      <blockquote
+                        className={cn(
+                          "border-border text-foreground/80 mt-1 border-l-2 pl-2 text-xs break-words whitespace-pre-wrap",
+                          !isOpen && "line-clamp-3",
+                        )}
+                      >
+                        {excerpt}
+                      </blockquote>
+                    ) : null}
+                    <p className="text-muted-foreground/80 mt-0.5 text-2xs">
+                      {citation.fused_rank != null
+                        ? `rank ${citation.fused_rank} · `
+                        : null}
+                      {collapsible ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(citation.n)}
+                            aria-expanded={isOpen}
+                            aria-label={
+                              isOpen
+                                ? `Collapse excerpt for source ${citation.n}`
+                                : `Expand excerpt for source ${citation.n}`
+                            }
+                            className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
+                          >
+                            {isOpen ? "Show less" : "Show more"}
+                          </button>
+                          {" · "}
+                        </>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => showMarker(citation.n)}
+                        aria-label={`Back to where source ${citation.n} is cited in the answer`}
+                        className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
+                      >
+                        Back to claim {citation.n}
+                      </button>
+                    </p>
                   </div>
                 </li>
               );

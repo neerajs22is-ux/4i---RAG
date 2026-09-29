@@ -31,7 +31,7 @@ import { citationIndex, linkifyCitations } from "@/lib/chat/citations";
 type CitationHighlightValue = {
   /** Marker `n` to emphasise, or null. */
   marker: number | null;
-  /** Navigates directly to supporting passage `n`. */
+  /** Navigates directly to source row `n`. */
   onShowSource?: (n: number) => void;
 };
 
@@ -216,9 +216,9 @@ export function AnswerContent({
   citations: AskCitation[];
   /** Unique per rendered answer — scopes marker ids and navigation targets. */
   scope: string;
-  /** Marker `n` to emphasise after arriving from the supporting-passage list. */
+  /** Marker `n` to emphasise after arriving from the source list. */
   highlightedMarker?: number | null;
-  /** Navigates directly to supporting passage `n`. */
+  /** Navigates directly to source row `n`. */
   onShowSource?: (n: number) => void;
 }) {
   const index = useMemo(() => citationIndex(citations), [citations]);
