@@ -49,7 +49,7 @@ const STATES: Record<EvidenceState, StateConfig> = {
   },
   conflicting: {
     label: "Sources disagree",
-    description: "Retrieved passages contradict each other on this point.",
+    description: "Retrieved sources contradict each other on this point.",
     icon: Split,
     chip: "border-conflict/25 bg-conflict-muted text-conflict",
     dot: "bg-conflict",

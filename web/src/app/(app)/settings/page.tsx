@@ -22,8 +22,8 @@ import {
  */
 
 const ANSWERING = [
-  ["Grounding", "Answers are written only from retrieved passages"],
-  ["Citations", "Every factual claim must cite a supplied passage"],
+  ["Grounding", "Answers are written only from retrieved evidence"],
+  ["Citations", "Every factual claim must cite its supporting evidence"],
   ["Sampling", "Deterministic (temperature 0)"],
   ["When evidence is missing", "Refuses instead of guessing"],
 ];
@@ -105,7 +105,7 @@ export default function SettingsPage() {
                 Evidence verification
               </CardTitle>
               <CardDescription>
-                Before an answer is written, the retrieved passages are checked
+                Before an answer is written, the retrieved evidence is checked
                 against the question. These are the four outcomes a reader will
                 see.
               </CardDescription>

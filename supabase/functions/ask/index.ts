@@ -20,6 +20,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { buildCitationSources } from "../_shared/citation-sources.ts";
 import { combineScopes } from "../_shared/temp-scope.ts";
 import { routePreRag } from "../_shared/pre-rag-router.ts";
 import { classifyFollowUp } from "../_shared/follow-up-detector.ts";
@@ -498,11 +499,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // 3. Deterministic sufficiency gate (model-free).
   const gate = verifyEvidence(query, retrieved);
   const mode = promptModeFor(gate.verdict);
-  const sources = retrieved.map((e, i) => ({
-    n: i + 1, chunk_id: e.chunk_id, document_id: e.document_id,
-    file_name: e.file_name, page: e.page,
-    fused_rank: e.fused_rank, fused_score: e.fused_score,
-  }));
+  // Citation sources: identity/numbering exactly as before, plus a verbatim
+  // excerpt of the already-retrieved chunk (see _shared/citation-sources.ts).
+  // No retrieval, ranking, gating or generation change: the content was
+  // already in memory on this path.
+  const sources = buildCitationSources(retrieved);
 
   // 4. INSUFFICIENT (incl. empty): refusal without any model call.
   if (mode === "refuse") {

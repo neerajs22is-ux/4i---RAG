@@ -6,7 +6,11 @@ exposure and polish done — Pass A/B/C/D (notebooks, source selection, scoped
 chat, upload), Pass E (chat polish), the Spaces/sidebar polish pass and the
 temporary-file pass (D60, chat-surface attach/promote, 30/30 live checks) built,
 validated and exercised in production; the visual review pass NOT started.**
-Nothing is committed.
+Since then: citation excerpts deployed (`ask` v51, verified 7/7 verbatim +
+persisted); citation UX shipped twice (`4699f9c` direct marker↔row navigation,
+`1f16902` compact rows + excerpts + `[n]` — both live on Vercel); a collapsible
+Supporting-evidence disclosure is implemented and locally verified (16/16),
+awaiting checkpoint commit (this pass).
 
 ---
 
@@ -47,11 +51,11 @@ Deployed (all ACTIVE):
 
 | Function | Version | Role |
 |---|---|---|
-| `ingest-pdf` | **35** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) |
-| `embed-worker` | **30** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) |
-| `query-chunks` | **31** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) |
-| `ask` | **39** | full quality chain, notebook scope (D50) + conversation temp union (D60) |
-| `storage-cleanup` | **2** | bounded orphan cleanup (D52) + expired-temp section (D60) |
+| `ingest-pdf` | **37** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) |
+| `embed-worker` | **36** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) |
+| `query-chunks` | **36** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) |
+| `ask` | **51** | full quality chain, notebook scope (D50) + conversation temp union (D60) + citation excerpts (D80) |
+| `storage-cleanup` | **4** | bounded orphan cleanup (D52) + expired-temp section (D60) |
 
 Key limits/state: bucket `company-documents` private, `file_size_limit` **25 MiB**
 (D51); upload limits 25 MB/400 MB/60 docs/20,000 chunks/1+3 jobs (D47);
@@ -145,8 +149,29 @@ normal use; treat these numbers as a dated snapshot, not a constant.
   `delete-document`; second dry-run finds nothing), and the frozen 34-case
   regression (34/34 HTTP 200; retrieval metrics bit-identical 0.8824/0.5980/
   0.7926; deltas confined to corpus evolution + generation variance).
-  Fixtures removed; production byte-identical afterwards (2 docs, exact
-  attributes, 226+13 chunks).
+   Fixtures removed; production byte-identical afterwards (2 docs, exact
+   attributes, 226+13 chunks).
+- **Citation excerpts (D80)** — `ask` **v51** (only function deployed):
+  `_shared/citation-sources.ts` builds `sources[]` with verbatim `excerpt`
+  from the exact retrieved chunk (1:1, numbering/identity unchanged; 5/5 unit
+  tests); same array feeds response `citations` and persisted
+  `messages.sources` (JSONB, no schema change). Live-verified: HTTP 200,
+  7 citations / 4 docs, **7/7 excerpts byte-identical** to query-chunks
+  evidence by `chunk_id`, persistence carries excerpts, test conversation
+  deleted afterwards. No retrieval/rerank/gate/generation change.
+- **Citation UX v1 (`4699f9c`, live on Vercel)** — direct marker↔row
+  navigation, `[n]` markers, per-passage rows, no popup/loop; verified 8/8
+  round-trips, repeats, themes, reload, 0 console errors.
+- **Citation UX v2 (`1f16902`, live on Vercel)** — compact divide-y rows,
+  verbatim excerpts with Show more/less, chunk ids unrendered, rank subtle;
+  verified with excerpt mapping + backwards-compat reload.
+- **Evidence disclosure (uncommitted, this pass)** — collapsible "Supporting
+  evidence" header (`N sources · M documents`, `aria-expanded`), marker click
+  auto-opens when collapsed, filename truncation with full title, rank as
+  hover-only metadata, user-facing "evidence/sources" (ingestion "passages"
+  kept where technically accurate). Locally verified 16/16 (collapse
+  717px→34px, keyboard toggle, auto-open nav, repeats, clamp-2, dark, 390px,
+  reload, 0 console errors); test conversation deleted.
 
 ## 5. Frontend state
 
@@ -180,6 +205,13 @@ scoped answer, production restored). **Pass E, the Spaces/sidebar polish pass
 and the temporary-file pass are complete; the visual review pass is the
 remaining UI work.**
 
+**Citation UX (current):** direct `[n]` marker ↔ evidence-row navigation with
+focus/highlight, unique occurrence IDs for repeats, no popup/loop
+(`4699f9c`); compact rows with verbatim excerpts + Show more/less, no chunk
+ids, subtle rank (`1f16902`); collapsible "Supporting evidence" disclosure
+(uncommitted, verified locally 16/16). Frontend `1f16902` is live on Vercel
+(`https://4i-rag.vercel.app/`). Backend excerpts live in `ask` v51 (D80).
+
 **Upload-failure diagnosis (2026-09-17):** the reported "could not be
 registered" had two causes — (1) the queue registered every file immediately
 while `ingest-pdf` allows one processing job per workspace (reproduced: 409 for
@@ -198,7 +230,14 @@ documents (their files; left untouched — re-upload registers normally, or
   `ApiError.detail` (their own envelope message) rather than dedicated kinds;
   `409` maps to `conflict` (D54). A dedicated size/budget kind is still a nicety.
 - **Storage health** is designed but not implemented (no architectural change needed).
-- **Evidence workspace** (passage text) still needs an additive `/ask` change.
+- **Evidence excerpts are live** (`ask` v51, D80) — the former "needs an
+  additive `/ask` change" gap is closed; rows render excerpts when present and
+  degrade cleanly on pre-excerpt rows.
+- **Test-account credential entry is unstable:** the `RAG4I_test_user` blob has
+  changed shape twice (60-byte JSON ↔ 14-byte non-JSON) and its username label
+  currently disagrees with the working admin email. Sign-in works with the
+  stored entry as of 2026-09-29 verification, but re-check the entry (shape +
+  a real sign-in) before the next browser session instead of assuming it.
 - **Orphan objects in production (6, all left untouched):** the long-standing
   `…/docs/phase3c2/incometax.pdf`; four pre-fix uploads
   (`839aec39…/Thrine-Sales-SOP-1-.pdf`, `81f5a5bb…/d2c-Growth-Engine-Pitch-Deck-1-.pdf`,
@@ -351,7 +390,13 @@ deployed ask v49):** experimental reuse removed from the production path —
 FOLLOW_UP → H3A context → H3B rewrite → query-chunks → gate → generation
 restored; smoke 9/9 ALL_PASS (incl. ex-reuse pair now citing 5 sources);
 `evidence-reuse.ts` retained unwired as evaluation history; no other function
-touched. **Do not start
+touched. **Citation excerpts (D80, deployed ask v51):** `sources[]` carry
+verbatim `excerpt` (7/7 byte-identical live, persisted, fixture deleted).
+**Evidence disclosure UI (verified locally 16/16, checkpoint commit pending):**
+collapsible Supporting-evidence header, auto-open on marker click, truncated
+filenames, hover-only rank, evidence/sources terminology. **Next:** checkpoint
+commit (excerpt backend source + disclosure UI + this doc pass), push, Vercel
+auto-deploy, live smoke test. **Do not start
 the visual review** until instructed. Refresh the relevant documents inside
 each pass (D53).
 
@@ -379,38 +424,37 @@ each pass (D53).
 
 ## 9. Git / deployment state
 
-- Branch `master`, **HEAD `e3a9062`** — **no commits for any B-series work**.
-- **Uncommitted (tracked):** `ARCHITECTURE.md`, `DECISIONS.md`, `eval/README.md`
-  (doc updates) and `supabase/functions/{ask,embed-worker,ingest-pdf,query-chunks}/index.ts`
-  (CORS + B1/B2/B3 changes). Frontend work stays inside the untracked `web/`.
-- **Untracked (new):** `SESSION_HANDOFF.md`, `UI_ARCHITECTURE.md`, `.gitignore`,
-  `web/` (whole frontend), `supabase/functions/storage-cleanup/`,
-  `supabase/functions/_shared/{cors.ts,embed-batch.ts,embed-batch_test.ts,orphan-policy.ts,orphan-policy_test.ts,temp-scope.ts,temp-scope_test.ts}`,
-  five new migrations (`*_phase_b3_upload_safety`, `*_phase_b6_storage_file_cap`,
-  `*_phase_b4_notebook_schema`, `*_phase_b2_scoped_retrieval`,
-  `20260917000004_temp_documents` — applied 2026-09-17 via Management API),
-  `eval/mappings/chunk_map_3c3.json`, `chunk_map_3c4.json`, `eval/store_refresh_token.py`,
-  `eval/wincred.py`, all `eval/runs/*.md` and run artifacts, `package.json`,
-  `research_context/`, `test data/`.
-- Backend functions are **deployed** (versions in §3); the frontend is **not deployed**.
-- Test account `test@rag.com`; password in the Windows Credential Manager target
-  `RAG4I_test_user` (read via `eval/wincred.py`). Never print or commit it.
-- **Preflight snapshot (verified 2026-09-17, D59; refreshed post-validation):**
-  HEAD `e3a9062`; tracked modifications are the docs plus the CORS/B-series/D58
-  functions; untracked additions include the temp-file implementation
-  (migration applied 2026-09-17; `temp-scope` module + edits to `ingest-pdf`,
-  `query-chunks`, `ask`, `storage-cleanup` deployed as v35/v31/v39/v2); the
-  CLI (v2.117.0) is authenticated through the Windows Credential Manager token
-  (`LegacyGeneric:target=Supabase CLI:supabase`) and the project is linked to
-  `uqlpfgtkmsaexmtieulp`; deployed: `ingest-pdf` **v35** ·
-  `embed-worker` **v30** · `query-chunks` **v31** · `ask` **v39** ·
-  `storage-cleanup` **v2**, all ACTIVE (`embed-worker` `verify_jwt=false`);
-  write permission proven by the authorized deploys themselves; production:
-  1 tenant, 2 documents, both `ready` (7 pp / 160,516 B / 13 chunks; 78 pp /
-  433,795 B / 226 chunks), 0 temp rows, jobs 2 `succeeded`; temp files
-  live-validated end to end (34-case regression PASS; frontend pass 30/30 with
-  production restored). Re-establish this snapshot at the start of a
-  substantial session and immediately before any mutation.
+- Branch `main`, **HEAD `1f16902`** (citation UI checkpoints `4699f9c`,
+  `1f16902` committed and pushed; Vercel serves `1f16902`).
+- **Uncommitted (tracked, this pass):** `ARCHITECTURE.md`, `DECISIONS.md`,
+  `SESSION_HANDOFF.md` (D80 documentation reconciliation);
+  `supabase/functions/ask/index.ts` (excerpt construction, deployed as v51);
+  `web/` evidence-disclosure + terminology files (`assistant-message.tsx`,
+  `citation-marker.tsx`, `chat-view.tsx`, `auth-gate.tsx`, `settings/page.tsx`,
+  `evidence-status.tsx`, `presentation.ts`).
+- **Untracked (new, this pass):**
+  `supabase/functions/_shared/citation-sources.ts` (+ `_test.ts`; deployed
+  inside `ask` v51).
+- **Untracked (pre-existing, leave alone):** `brag-output*/`, `deno.lock`,
+  `eval/cases/followup_*` golds, `supabase/functions/_shared/evidence-reuse*.ts`
+  (H3C-B history, unwired), `super-video-maker-skill/`.
+- Backend functions are **deployed** (versions in §3; `ask` v51 carries the
+  uncommitted excerpt source — the checkpoint commit reconciles source with
+  production); the frontend `1f16902` is **deployed on Vercel**.
+- Test account `test@rag.com` is RETIRED — forget it fully. Working admin
+  account is `neeraj2016year@gmail.com` (role admin); password in the Windows
+  Credential Manager target `RAG4I_test_user` (read via `eval/wincred.py` as
+  `{"email","password"}` JSON). Never print or commit it.
+- **Preflight snapshot (verified 2026-09-29, D59):** HEAD `1f16902`; working
+  tree holds the D80 checkpoint candidates only (plus the pre-existing items
+  above); the CLI (v2.117.0) is authenticated (Owner account; `functions list`
+  works) and the project is linked to `uqlpfgtkmsaexmtieulp`; deployed:
+  `ingest-pdf` **v37** · `embed-worker` **v36** · `query-chunks` **v36** ·
+  `ask` **v51** · `storage-cleanup` **v4**, all ACTIVE; production Q/A smoke
+  tests create real conversations — delete them afterwards via PostgREST
+  (verified working: DELETE 204 + zero messages remain). Re-establish this
+  snapshot at the start of a substantial session and immediately before any
+  mutation.
 
 ## 10. Important files
 

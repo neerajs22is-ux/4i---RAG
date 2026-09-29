@@ -86,7 +86,7 @@ export function provenanceSteps(response: AskResponse): ProvenanceStep[] {
   const t = response.timings;
   if (!t) return [];
   const steps: ProvenanceStep[] = [
-    { label: "Found passages", ms: t.retrieval_ms ?? null },
+    { label: "Found evidence", ms: t.retrieval_ms ?? null },
     { label: "Wrote the answer", ms: t.generation_ms ?? null },
     { label: "Checked citations", ms: t.citation_guard_ms ?? null },
     { label: "Checked grounding", ms: t.tripwire_ms ?? null },
@@ -141,7 +141,7 @@ export function citationsFromSources(sources: MessageSource[]): AskCitation[] {
 }
 
 const RAW_STEP_LABELS: Array<[string, string]> = [
-  ["retrieval_ms", "Found passages"],
+  ["retrieval_ms", "Found evidence"],
   ["generation_ms", "Wrote the answer"],
   ["citation_guard_ms", "Checked citations"],
   ["tripwire_ms", "Checked grounding"],

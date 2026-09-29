@@ -22,17 +22,17 @@ import { cn } from "cn";
  * Assistant message — the primary reading surface.
  *
  * Hierarchy is carried by typography and whitespace rather than cards: a small
- * state header, the answer itself in markdown, optional state notes, a compact
- * source list (one tight row per citation: document, page, the verbatim
- * chunk excerpt when the backend provided one, and retrieval rank as subtle
- * metadata), then a quiet action row with copy and a provenance disclosure
- * built from real timings.
+ * state header, the answer itself in markdown, optional state notes, a
+ * collapsible supporting-evidence disclosure (one tight row per citation:
+ * document, page, the verbatim chunk excerpt when the backend provided one,
+ * and quiet return-to-claim metadata), then a separated quiet action row
+ * with copy and a provenance disclosure built from real timings.
  *
  * Citations navigate directly in both directions with no intermediate popup:
- * selecting a number in the answer scrolls its source row into view and
- * highlights it, and each row offers a single way back to the claim in the
- * answer. Both moves scroll the target into view, focus it and give it a
- * short emphasis.
+ * selecting a number in the answer opens the disclosure when collapsed,
+ * scrolls its evidence row into view and highlights it, and each row offers
+ * a single subtle way back to the claim in the answer. Both moves scroll the
+ * target into view, focus it and give it a short emphasis.
  *
  * The backend returns citation metadata plus a verbatim excerpt of the exact
  * retrieved chunk (or no excerpt on rows persisted before excerpts existed,
@@ -73,8 +73,14 @@ export function AssistantMessage({
   const prefersReducedMotion = useReducedMotion();
   const [highlight, setHighlight] = useState<Highlight | null>(null);
   const highlightTimer = useRef<number | null>(null);
-  /** Per-row excerpt expansion; collapsed rows clamp to three lines. */
+  /** Per-row excerpt expansion; collapsed rows clamp to two lines. */
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  /**
+   * Evidence disclosure state. Open by default so established reading
+   * behavior is unchanged; the reader can collapse it to a single line and
+   * markers reopen it on demand.
+   */
+  const [evidenceOpen, setEvidenceOpen] = useState(true);
 
   const toggleExpanded = useCallback((n: number) => {
     setExpanded((prev) => {
@@ -116,11 +122,22 @@ export function AssistantMessage({
 
   const showSource = useCallback(
     (n: number) => {
+      // Open the disclosure first when collapsed; the effect below scrolls
+      // to the row once it is mounted.
+      setEvidenceOpen(true);
       pulse("source", n);
-      navigate(`source-${scope}-${n}`);
     },
-    [navigate, pulse, scope],
+    [pulse],
   );
+
+  // Navigate to a highlighted evidence row after render, so opening the
+  // disclosure from a marker click still lands on the right row. The pulse
+  // always creates a fresh highlight object, so repeat visits re-fire.
+  useEffect(() => {
+    if (highlight?.target === "source" && evidenceOpen) {
+      navigate(`source-${scope}-${highlight.n}`);
+    }
+  }, [highlight, evidenceOpen, navigate, scope]);
 
   const showMarker = useCallback(
     (n: number) => {
@@ -160,13 +177,38 @@ export function AssistantMessage({
       ) : null}
 
       {sources.length > 0 ? (
-        <div className="mt-3">
-          <p className="text-muted-foreground text-2xs font-medium tracking-wide uppercase">
-            Sources — {sources.length}{" "}
-            {sources.length === 1 ? "passage" : "passages"} ·{" "}
-            {documentCount} {documentCount === 1 ? "document" : "documents"}
-          </p>
-          <ol className="divide-border/70 mt-1 divide-y">
+        <div className="mt-3 border-t border-border/60 pt-1">
+          <button
+            type="button"
+            onClick={() => setEvidenceOpen((open) => !open)}
+            aria-expanded={evidenceOpen}
+            aria-controls={`evidence-list-${scope}`}
+            aria-label={`Supporting evidence: ${sources.length} ${sources.length === 1 ? "source" : "sources"} across ${documentCount} ${documentCount === 1 ? "document" : "documents"}`}
+            className="focus-visible:ring-ring/50 flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 text-left transition-colors duration-[var(--duration-fast)] outline-none focus-visible:ring-2"
+          >
+            <span className="text-foreground text-2xs font-medium tracking-wide uppercase">
+              Supporting evidence
+            </span>
+            <span className="text-muted-foreground text-2xs">
+              {sources.length} {sources.length === 1 ? "source" : "sources"}{" "}
+              · {documentCount}{" "}
+              {documentCount === 1 ? "document" : "documents"}
+            </span>
+            <ChevronDown
+              aria-hidden="true"
+              className={cn(
+                "text-muted-foreground ml-auto size-3.5 shrink-0 transition-transform duration-[var(--duration-fast)]",
+                evidenceOpen && "rotate-180",
+              )}
+            />
+          </button>
+          {evidenceOpen ? (
+            <div
+              id={`evidence-list-${scope}`}
+              role="region"
+              aria-label="Supporting evidence"
+            >
+              <ol className="divide-border/70 divide-y">
             {sources.map((citation) => {
               const active = highlightedSource === citation.n;
               const excerpt = citation.excerpt ?? null;
@@ -197,9 +239,14 @@ export function AssistantMessage({
                     {citation.n}
                   </span>
                   <div className="min-w-0 flex-1 leading-tight">
-                    <p className="text-foreground truncate text-xs">
-                      <span className="font-medium">{citation.file_name}</span>{" "}
-                      <span className="text-muted-foreground">
+                    <p className="flex min-w-0 items-baseline gap-1 text-xs">
+                      <span
+                        className="text-foreground min-w-0 flex-1 truncate font-medium"
+                        title={citation.file_name}
+                      >
+                        {citation.file_name}
+                      </span>
+                      <span className="text-muted-foreground shrink-0">
                         ·{" "}
                         {citation.page != null
                           ? `p. ${citation.page}`
@@ -210,16 +257,23 @@ export function AssistantMessage({
                       <blockquote
                         className={cn(
                           "border-border text-foreground/80 mt-1 border-l-2 pl-2 text-xs break-words whitespace-pre-wrap",
-                          !isOpen && "line-clamp-3",
+                          !isOpen && "line-clamp-2",
                         )}
                       >
                         {excerpt}
                       </blockquote>
                     ) : null}
-                    <p className="text-muted-foreground/80 mt-0.5 text-2xs">
-                      {citation.fused_rank != null
-                        ? `rank ${citation.fused_rank} · `
-                        : null}
+                    <p className="text-muted-foreground/70 mt-0.5 text-2xs">
+                      <span
+                        title={
+                          citation.fused_rank != null
+                            ? `Retrieved at rank ${citation.fused_rank}`
+                            : undefined
+                        }
+                      >
+                        Retrieved source
+                      </span>
+                      {" · "}
                       {collapsible ? (
                         <>
                           <button
@@ -244,18 +298,20 @@ export function AssistantMessage({
                         aria-label={`Back to where source ${citation.n} is cited in the answer`}
                         className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded underline-offset-2 outline-none transition-colors duration-[var(--duration-fast)] hover:underline focus-visible:ring-2"
                       >
-                        Back to claim {citation.n}
+                        Back to claim [{citation.n}]
                       </button>
                     </p>
                   </div>
                 </li>
               );
             })}
-          </ol>
+              </ol>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-center gap-1">
+      <div className="mt-4 flex flex-wrap items-center gap-1 border-t border-border/60 pt-3">
         <CopyButton text={view.answer} />
 
         {hasProvenance ? (

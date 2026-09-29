@@ -403,8 +403,8 @@ export function ChatView({
                 </EmptyHeading>
                 <p className="text-muted-foreground mt-2 max-w-lg text-sm text-pretty">
                   {notebookId
-                    ? "Answers use only the sources you included in this space, with the passages that support them."
-                    : "Questions are answered only from the documents in this workspace, with the passages that support them."}
+                    ? "Answers use only the sources you included in this space, with the supporting evidence."
+                    : "Questions are answered only from the documents in this workspace, with the supporting evidence."}
                 </p>
 
                 {notebookId ? (

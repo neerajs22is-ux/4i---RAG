@@ -59,7 +59,7 @@ function SignInScreen() {
             Sign in to RAG&#8209;4i
           </h1>
           <p className="text-muted-foreground mt-1.5 text-sm text-pretty">
-            Answers grounded in your documents, with the passages they came from.
+            Answers grounded in your documents, with the supporting evidence.
           </p>
         </div>
         <div className="mt-6">

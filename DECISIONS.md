@@ -1457,3 +1457,31 @@ D79. H3C-B rollback: remove experimental reuse from production (deployed ask v49
 - Revisit if: a future phase re-proposes reuse — only with an eval-gated
   sufficiency boundary and the H3C-A predicates intact.
 
+D80. Citation excerpts + compact supporting-evidence UI (deployed ask v51)
+
+- Decision: `/ask` citation sources carry `excerpt` — the verbatim content of
+  the exact retrieved chunk behind that citation (empty/missing content →
+  `null`) — constructed 1:1 over the retrieved array in the new pure helper
+  `_shared/citation-sources.ts` (+5 unit tests). The same array feeds the
+  response `citations` and the persisted `messages.sources` (JSONB, no schema
+  change). The frontend shows each excerpt in a compact collapsible
+  "Supporting evidence" disclosure (document + page primary, 2-line clamped
+  quote, retrieval rank demoted to hover metadata, single subtle "Back to
+  claim [n]"), with direct marker ↔ row navigation, unique occurrence IDs, no
+  popup and no navigation loop. User-facing copy says "evidence"/"sources";
+  ingestion chunk-progress copy keeps "passages" where it is technically
+  accurate (embedding units, not cited evidence).
+- Status: ACTIVE / DEPLOYED (`ask` **v51**, no other function touched) and
+  browser-verified against production (7/7 excerpts byte-identical to their
+  retrieved chunks; persistence carries excerpts; pre-excerpt rows still
+  render). This lands the additive change D45 authorized and satisfies D43
+  (excerpts are backend-supplied, never invented). D43/D45 bodies above are
+  preserved as history.
+- Reason: readers must inspect the exact evidence behind a claim; the prior
+  metadata-only rows could not show it, and the card wall dominated answers.
+- Consequence: answers keep full evidence without a second retrieval, extra
+  cost, or redrawn pipeline; old rows (no `excerpt`) render as before.
+- Revisit if: chunk sizing changes (excerpt bound lives with the 1000-char
+  ingestion contract) or a future evidence-workspace needs more than the
+  verbatim chunk.
+

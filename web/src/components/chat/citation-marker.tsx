@@ -16,8 +16,9 @@ import { cn } from "cn";
  * backend actually returned (document, page, retrieval rank); the full
  * metadata row lives at the destination.
  *
- * Passage text is deliberately absent: `/ask` does not return it yet, and no
- * substitute is invented here (no snippets, no similarity percentages).
+ * Passage text is never invented here: rows show the verbatim `excerpt` the
+ * backend returned for the citation, or no excerpt when the stored row
+ * predates excerpts (no snippets, no similarity percentages).
  *
  * Citation identity (`n` / `chunk_id` / `document_id`) is unchanged; this
  * component only changes how the reader travels between the claim and its

@@ -205,7 +205,12 @@ Deterministic. Citations are positional `[Sn]` over the exact evidence array.
 `validateCitations` rejects: malformed bare `[S]`, out-of-range `[Sn]`, a
 citation with no backing chunk, cross-tenant reference, and (when scoped)
 out-of-document reference. Failure is a **hard 502** (never silent). Response
-`citations` are the de-duplicated, validated source objects.
+`citations` are the de-duplicated, validated source objects. Each source
+object additionally carries `excerpt`: the verbatim content of the exact
+retrieved chunk behind that citation (empty/missing content → `null`). The
+excerpt is constructed 1:1 over the retrieved array
+(`_shared/citation-sources.ts`, D80), so citation numbering and chunk identity
+are unchanged; no summarization, rewriting, or second retrieval is involved.
 
 ## 1.7 Groundedness tripwire
 
@@ -248,7 +253,8 @@ Deterministic and **downgrade-only** (`aggregateCorrectness`):
 
 `conversations` + `messages` (RLS-scoped, caller data plane). Each `/ask`
 persists a user row and an assistant row in one multi-row insert (uniform keys).
-The assistant row stores `label`, `sources` (provenance JSONB), `model_ids`
+The assistant row stores `label`, `sources` (provenance JSONB — each entry
+carrying the verbatim chunk `excerpt`, D80), `model_ids`
 (`answer_model`, `prompt`, `embedding`), and `timings` (retrieval/generation/
 stage timings, tokens, grounded, and — when the checker runs —
 `correctness_verdict`/`correctness_ms`). A persistence failure returns the answer
@@ -365,8 +371,10 @@ Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
 
 - Supabase project ref `uqlpfgtkmsaexmtieulp`, region `ap-southeast-2`.
 - AWS Bedrock Mantle region `ap-south-1`; Jina server-side.
-- Deployed and ACTIVE: `ingest-pdf` **v36**, `embed-worker` **v31** (+ per-minute
-  Cron), `query-chunks` **v32**, `ask` **v40**, `storage-cleanup` **v3**.
+- Deployed and ACTIVE (observed 2026-09-29 via `functions list`):
+  `ingest-pdf` **v37**, `embed-worker` **v36** (+ per-minute Cron),
+  `query-chunks` **v36**, `ask` **v51** (citation excerpts, D80),
+  `storage-cleanup` **v4**.
 - `CORRECTNESS_CHECKER_ENABLED` OFF. No other feature flag enabled.
 - Bucket `company-documents` is private with `file_size_limit = 25 MiB`; the
   corpus grows through normal use.**Production snapshot (2026-09-17):** 2
@@ -375,10 +383,14 @@ Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
   UI after the Pass C fix) — **239 chunks**; 1 notebook (`test`) with one
   selected source; both ingest jobs `succeeded`. Six Storage objects have no
   document row (the long-standing `phase3c2` orphan, four pre-fix uploads run by
-  a user, and one object left by a diagnostic in a since-deleted test tenant) —
-  see `eval/runs/pre-pass-e-state-sync.md`.
-- Source HEAD is `e3a9062`; the B-series work (D46–D52) is applied/deployed but
-  **not yet committed**.
+   a user, and one object left by a diagnostic in a since-deleted test tenant) —
+   see `eval/runs/pre-pass-e-state-sync.md`. Corpus note (observed, not a
+   census, 2026-09-29 smoke tests): the workspace now holds 4+ ready documents
+   (SEBI AIF Regulations 2012, Income_Tax_Act_2025 as amended, incometax.pdf,
+   Applicability of section 56 to rights issue).
+- The B-series work (D46–D52) is applied, deployed and committed (`7b4f4fe`
+  and later). Current HEAD and working-tree state live in `SESSION_HANDOFF.md`
+  §9, not here — do not treat any hash in this section as current.
 - **Versions and state in this section are a dated snapshot, not a guarantee.**
   Re-verify with a harmless authenticated read (e.g. `supabase functions list`,
   `supabase projects list`) before any deployment, migration or mutation —
