@@ -14,6 +14,13 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
+import {
+  enforceCostGate,
+  recordProviderUse,
+  withProviderSlot,
+  SlotBusyError,
+} from "../_shared/cost-control.ts";
 import { MANTLE_CHAT_PATH } from "../_shared/grounding.ts";
 import {
   runBenchmarkAnswer,
@@ -30,6 +37,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const preflight = corsPreflight(req);
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
+
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
 
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
@@ -54,8 +65,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (!query || query.length > 1000) return json(400, { ok: false, error: "invalid query" });
 
   const { data: mem } = await db.from("memberships")
-    .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
+    .select("tenant_id, role").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
   if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+  // M-10: benchmark endpoints spend provider budget on caller-supplied
+  // evidence without owning documents. Restrict to tenant managers so a
+  // compromised member cannot turn them into a public generation oracle.
+  // Member use stays on /ask + /query-chunks.
+  const role = (mem[0] as { role?: string }).role;
+  if (role !== "owner" && role !== "admin") {
+    return json(403, { ok: false, error: "benchmarks require a workspace manager" });
+  }
+
+  // P0 cost controls (D83): manager-only is necessary but not sufficient —
+  // one eval run is 66+ Mantle calls. Kill switch + minute/daily gate apply
+  // to managers too.
+  {
+    const blocked = await enforceCostGate(db, tenantId, caller, "benchmark-answer");
+    if (blocked) return json(blocked.status, blocked.body);
+  }
 
   if (!Array.isArray(body.evidence)) {
     return json(400, { ok: false, error: "evidence must be an array" });
@@ -93,16 +120,26 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
   const checkerEnabled = Deno.env.get("CORRECTNESS_CHECKER_ENABLED") === "true";
 
-  const result = await runBenchmarkAnswer({
-    tenantId,
-    query,
-    evidence,
-    priorCount,
-    docCount,
-    retrievalMs,
-    mantle: { baseUrl: MANTLE_BASE_URL, chatPath: MANTLE_CHAT_PATH, modelId, key: mantleKey, maxTokens: MAX_TOKENS },
-    checkerEnabled,
-  });
+  // One provider slot for the whole benchmark answer (sequential internal
+  // calls hold at most one slot at a time by construction of the helper).
+  let result;
+  try {
+    result = await withProviderSlot(db, tenantId, caller, () => runBenchmarkAnswer({
+      tenantId,
+      query,
+      evidence,
+      priorCount,
+      docCount,
+      retrievalMs,
+      mantle: { baseUrl: MANTLE_BASE_URL, chatPath: MANTLE_CHAT_PATH, modelId, key: mantleKey, maxTokens: MAX_TOKENS },
+      checkerEnabled,
+    }));
+  } catch (e) {
+    if (e instanceof SlotBusyError) return json(503, { ok: false, error: "workspace is busy" });
+    throw e;
+  }
+  await recordProviderUse(db, tenantId, caller, "benchmark-answer",
+    Math.ceil(evidence.reduce((sum, e) => sum + e.content.length, 0) / 4) + 1024);
   if (result.status !== 200) return json(result.status, result.body);
   const responseBody = result.body as Record<string, unknown>;
   console.log(JSON.stringify({

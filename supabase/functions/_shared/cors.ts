@@ -22,10 +22,25 @@ const ALLOWED_ORIGINS: string[] = (Deno.env.get("CORS_ALLOWED_ORIGINS") ?? "")
 
 export function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") ?? "";
-  const allowOrigin =
-    ALLOWED_ORIGINS.length > 0
-      ? (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0])
-      : (origin || "*");
+  // L-1: never emit a wildcard when a browser Origin is present. With no
+  // allow-list configured only https origins (plus localhost http for local
+  // dev) are echoed; anything else gets no usable origin so the browser
+  // blocks it. Non-browser calls (no Origin) keep "*" — harmless without
+  // credentials, which are never used.
+  let allowOrigin: string;
+  if (ALLOWED_ORIGINS.length > 0) {
+    allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  } else if (!origin) {
+    allowOrigin = "*";
+  } else if (
+    origin.startsWith("https://") ||
+    origin.startsWith("http://localhost") ||
+    origin.startsWith("http://127.0.0.1")
+  ) {
+    allowOrigin = origin;
+  } else {
+    allowOrigin = "https://4i-rag.vercel.app";
+  }
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info",

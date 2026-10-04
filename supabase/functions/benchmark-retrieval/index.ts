@@ -17,6 +17,13 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
+import {
+  enforceCostGate,
+  recordProviderUse,
+  withProviderSlot,
+  SlotBusyError,
+} from "../_shared/cost-control.ts";
 import {
   BENCHMARK_JINA_EMBED_API_KEY_ENV,
   BENCHMARK_JINA_EMBED_MODEL,
@@ -313,6 +320,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
+
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
   const db = createClient(
@@ -355,8 +366,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   const { data: mem } = await db.from("memberships")
-    .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
+    .select("tenant_id, role").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
   if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+  // M-10: manager-only (see benchmark-answer). Provider spend on demand.
+  const role = (mem[0] as { role?: string }).role;
+  if (role !== "owner" && role !== "admin") {
+    return json(403, { ok: false, error: "benchmarks require a workspace manager" });
+  }
+
+  // P0 cost controls (D83): managers are gated too (one run = 32+ embeddings).
+  {
+    const blocked = await enforceCostGate(db, tenantId, caller, "benchmark-retrieval");
+    if (blocked) return json(blocked.status, blocked.body);
+  }
 
   const notebookId = body.notebook_id != null ? String(body.notebook_id) : null;
   if (notebookId !== null && !UUID_RE.test(notebookId)) {
@@ -379,24 +401,33 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json(400, { ok: false, error: "provide notebook_id or document_ids, not both" });
   }
 
-  const result = await buildBenchmarkEvidence({
-    db,
-    tenantId,
-    query,
-    notebookId,
-    conversationId,
-    requestedDocIds,
-    denseN,
-    lexN,
-    finalK,
-    provider,
-    model,
-    benchmarkRunId,
-    rerank: rerank as BenchmarkRerankMode,
-    embedApiKey: Deno.env.get(BENCHMARK_JINA_EMBED_API_KEY_ENV) ?? "",
-    rerankApiKey: Deno.env.get(BENCHMARK_RERANK_API_KEY_ENV) ?? "",
-    nowIso: new Date().toISOString(),
-  });
+  // One provider slot for the whole benchmark retrieval (its internal
+  // embed + rerank calls run sequentially under this one slot).
+  let result;
+  try {
+    result = await withProviderSlot(db, tenantId, caller, () => buildBenchmarkEvidence({
+      db,
+      tenantId,
+      query,
+      notebookId,
+      conversationId,
+      requestedDocIds,
+      denseN,
+      lexN,
+      finalK,
+      provider,
+      model,
+      benchmarkRunId,
+      rerank: rerank as BenchmarkRerankMode,
+      embedApiKey: Deno.env.get(BENCHMARK_JINA_EMBED_API_KEY_ENV) ?? "",
+      rerankApiKey: Deno.env.get(BENCHMARK_RERANK_API_KEY_ENV) ?? "",
+      nowIso: new Date().toISOString(),
+    }));
+  } catch (e) {
+    if (e instanceof SlotBusyError) return json(503, { ok: false, error: "workspace is busy" });
+    throw e;
+  }
+  await recordProviderUse(db, tenantId, caller, "benchmark-retrieval", Math.ceil(query.length / 4) + 2000);
   const totalMs = Math.round(performance.now() - t0);
   if (!result.ok) {
     const status = result.status >= 400 && result.status < 600 ? result.status : 502;

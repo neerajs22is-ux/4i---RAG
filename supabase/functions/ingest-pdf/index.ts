@@ -27,6 +27,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { extractText } from "npm:unpdf@1.8.1";
 import { tempExpiresAt } from "../_shared/temp-scope.ts";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { enforceCostGate } from "../_shared/cost-control.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
 
 const BUCKET = "company-documents";
 const CHUNK_SIZE = 1000;
@@ -43,6 +45,10 @@ const MAX_TENANT_DOCUMENTS = 60; // active documents (pending | ready)
 const MAX_TENANT_CHUNKS = 20000; // ≈220 MB of the 500 MB database budget
 const MAX_PROCESSING_JOBS = 1; // the worker claims one job at a time
 const MAX_PENDING_JOBS = 3;
+// M-2: content bounds before in-memory parse/chunk (decompression-bomb guard).
+// Generous ceilings that no legitimate 25 MB PDF hits; only crafted abuse does.
+const MAX_PDF_PAGES = 2000;
+const MAX_EXTRACTED_CHARS = 10_000_000;
 
 // RecursiveCharacterTextSplitter-equivalent (chars). Same behavior proven in
 // the Phase 2 POCs; do not retune here.
@@ -176,6 +182,21 @@ async function processDocument(db: Db, job: Job, doc: Doc) {
   }
   const bytes = new Uint8Array(await blob.arrayBuffer());
 
+  // M-2: server magic-byte gate. Client MIME/extension is spoofable; only
+  // the bytes are authoritative. HTML/JS polyglots renamed ".pdf" fail
+  // closed here instead of entering the chunk pipeline as trusted evidence.
+  if (
+    bytes.length < 5 ||
+    bytes[0] !== 0x25 || // %
+    bytes[1] !== 0x50 || // P
+    bytes[2] !== 0x44 || // D
+    bytes[3] !== 0x46 || // F
+    bytes[4] !== 0x2d // -
+  ) {
+    const err = await fail(`not a PDF (magic-byte mismatch) in ${doc.storage_path}`);
+    return { ok: false as const, error: err };
+  }
+
   // 2. Parse (page-preserving).
   let pages: string[];
   let totalPages: number;
@@ -190,6 +211,17 @@ async function processDocument(db: Db, job: Job, doc: Doc) {
   const fullText = pages.join("\n");
   if (!pages.length || fullText.trim().length === 0) {
     const err = await fail(`no extractable text in ${doc.storage_path} (scanned/image-only PDFs need OCR, not enabled)`);
+    return { ok: false as const, error: err };
+  }
+  // M-2: resource bounds before chunking in memory. Checked here (not just
+  // the downstream chunk-count budget) so a crafted many-page or
+  // highly-compressible PDF cannot OOM/timeout the Edge parse.
+  if (totalPages > MAX_PDF_PAGES) {
+    const err = await fail(`too many pages (${totalPages} > ${MAX_PDF_PAGES}) in ${doc.storage_path}`);
+    return { ok: false as const, error: err };
+  }
+  if (fullText.length > MAX_EXTRACTED_CHARS) {
+    const err = await fail(`extracted text too large (${fullText.length} > ${MAX_EXTRACTED_CHARS}) in ${doc.storage_path}`);
     return { ok: false as const, error: err };
   }
 
@@ -344,6 +376,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
+
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
   const db = createClient(
@@ -394,6 +430,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       if (!(await requireMember(tenantId))) return json(403, { ok: false, error: "not a member of this tenant" });
 
+      // P0 cost controls (D83): kill switch + minute/daily gate (tenant +
+      // user) before Storage/parse/embed-queue spend. No provider call happens
+      // in this handler (the worker embeds), so no slot is claimed here —
+      // the embed-worker holds the provider slot for the actual Jina calls.
+      {
+        const blocked = await enforceCostGate(db, tenantId, caller, "ingest-pdf");
+        if (blocked) return json(blocked.status, blocked.body);
+      }
+
       let tempConversationId: string | null = null;
       let tempExpiresAtIso: string | null = null;
       if (temporary) {
@@ -403,7 +448,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         }
         const { data: conv, error: convErr } = await db.from("conversations")
           .select("id").eq("id", tempConversationId).eq("tenant_id", tenantId).limit(1);
-        if (convErr) return json(500, { ok: false, error: convErr.message });
+        if (convErr) {
+          console.error(JSON.stringify({ scope: "db-error", context: "conversation read failed", code: convErr.code, detail: convErr.message.slice(0, 200) }));
+          return json(500, { ok: false, error: "conversation read failed" });
+        }
         if (!conv || conv.length === 0) {
           return json(404, { ok: false, error: "conversation not found" });
         }
@@ -443,7 +491,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
           .eq("tenant_id", tenantId)
           .eq("storage_path", storagePath)
           .limit(1);
-        if (error) return json(500, { ok: false, error: error.message });
+        if (error) {
+          console.error(JSON.stringify({ scope: "db-error", context: "document read failed", code: error.code, detail: error.message.slice(0, 200) }));
+          return json(500, { ok: false, error: "document read failed" });
+        }
         doc = (data?.[0] as Doc) ?? null;
       }
       if (temporary && doc && (doc as Doc & { expires_at: string | null }).expires_at === null) {
@@ -469,7 +520,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         const { data: sizeRows, error: sizeErr } = await db.from("documents")
           .select("file_size")
           .eq("tenant_id", tenantId);
-        if (sizeErr) return json(500, { ok: false, error: sizeErr.message });
+        if (sizeErr) {
+          console.error(JSON.stringify({ scope: "db-error", context: "storage budget read failed", code: sizeErr.code, detail: sizeErr.message.slice(0, 200) }));
+          return json(500, { ok: false, error: "storage budget read failed" });
+        }
         const usedBytes = (sizeRows ?? []).reduce(
           (sum: number, row: { file_size?: number | null }) => sum + (row.file_size ?? 0),
           0,
@@ -504,10 +558,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
             .eq("tenant_id", tenantId)
             .eq("storage_path", storagePath)
             .limit(1);
-          if (reErr || !raced?.[0]) return json(500, { ok: false, error: "document register race unresolved" });
+          if (reErr || !raced?.[0]) {
+            console.error(JSON.stringify({ scope: "db-error", context: "document register race unresolved" }));
+            return json(500, { ok: false, error: "document register failed" });
+          }
           doc = raced[0] as Doc;
         } else if (error || !data) {
-          return json(500, { ok: false, error: error?.message ?? "document register failed" });
+          console.error(JSON.stringify({ scope: "db-error", context: "document register failed", code: (error as { code?: string } | null)?.code ?? null }));
+          return json(500, { ok: false, error: "document register failed" });
         } else {
           doc = data as Doc;
         }
@@ -517,7 +575,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         document_id: (doc as Doc).id,
         status: "pending",
       }).select("id, attempts").single();
-      if (jobErr || !job) return json(500, { ok: false, error: jobErr?.message ?? "job create failed" });
+      if (jobErr || !job) {
+        console.error(JSON.stringify({ scope: "db-error", context: "job create failed", code: (jobErr as { code?: string } | null)?.code ?? null }));
+        return json(500, { ok: false, error: "job create failed" });
+      }
 
       const result = await processDocument(db, job as Job, doc as Doc);
       log({ tenant_id: tenantId, document_id: (doc as Doc).id, job_id: (job as Job).id, ok: result.ok });
@@ -564,22 +625,42 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // document in place — storage, chunks and embeddings are preserved, no
       // second copy is created. (Attaching it to a Space afterwards uses the
       // existing source-attach flow.)
+      // M-5: promotion widens a conversation file to the whole workspace, so
+      // only the uploader or a workspace manager may promote. Any-member
+      // promotion let one member persist another's private temp file.
       const documentId = String(body.document_id ?? "");
       if (!UUID_RE.test(documentId)) return json(400, { ok: false, error: "invalid document_id" });
       const { data: doc, error: docErr } = await db.from("documents")
-        .select("id, tenant_id, expires_at, conversation_id").eq("id", documentId).single();
+        .select("id, tenant_id, expires_at, conversation_id, created_by").eq("id", documentId).single();
       if (docErr || !doc) return json(404, { ok: false, error: "document not found" });
-      const d = doc as { id: string; tenant_id: string; expires_at: string | null };
-      if (!(await requireMember(d.tenant_id))) {
+      const d = doc as { id: string; tenant_id: string; expires_at: string | null; created_by: string | null };
+      const { data: prow } = await db.from("memberships")
+        .select("role").eq("tenant_id", d.tenant_id).eq("user_id", caller).limit(1);
+      const prole = (prow?.[0] as { role?: string } | undefined)?.role;
+      if (!prow || prow.length === 0) {
         return json(403, { ok: false, error: "not a member of this tenant" });
+      }
+      if (d.created_by !== caller && prole !== "owner" && prole !== "admin") {
+        return json(403, { ok: false, error: "only the uploader or a workspace manager can save this file" });
       }
       if (d.expires_at === null) {
         return json(400, { ok: false, error: "not a temporary document" });
       }
+      // M-5: cap TTL abuse at promotion time — an expired temp cannot be
+      // promoted back to life; re-upload instead.
+      const { data: fresh } = await db.from("documents")
+        .select("expires_at").eq("id", d.id).single();
+      const freshExp = (fresh as { expires_at: string | null } | null)?.expires_at ?? null;
+      if (freshExp !== null && Date.parse(freshExp) <= Date.now()) {
+        return json(400, { ok: false, error: "temporary file has expired" });
+      }
       const { error: promoteErr } = await db.from("documents")
         .update({ expires_at: null, conversation_id: null })
         .eq("id", d.id);
-      if (promoteErr) return json(500, { ok: false, error: promoteErr.message });
+      if (promoteErr) {
+        console.error(JSON.stringify({ scope: "db-error", context: "promote failed", code: promoteErr.code }));
+        return json(500, { ok: false, error: "promote failed" });
+      }
       log({ action: "promote", document_id: d.id, ok: true });
       return json(200, { ok: true, document_id: d.id });
     }
@@ -588,16 +669,28 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const documentId = String(body.document_id ?? "");
       if (!UUID_RE.test(documentId)) return json(400, { ok: false, error: "invalid document_id" });
       const { data: doc, error: docErr } = await db.from("documents")
-        .select("id, tenant_id, storage_path").eq("id", documentId).single();
+        .select("id, tenant_id, storage_path, created_by").eq("id", documentId).single();
       if (docErr || !doc) return json(404, { ok: false, error: "document not found" });
-      const d = doc as { id: string; tenant_id: string; storage_path: string };
-      if (!(await requireMember(d.tenant_id))) {
+      const d = doc as { id: string; tenant_id: string; storage_path: string; created_by: string | null };
+      // H-3/M-12: deletion destroys shared corpus + Storage originals.
+      // Only the uploader or a workspace manager may delete; any-member
+      // delete let one member wipe another's documents.
+      const { data: drow } = await db.from("memberships")
+        .select("role").eq("tenant_id", d.tenant_id).eq("user_id", caller).limit(1);
+      const drole = (drow?.[0] as { role?: string } | undefined)?.role;
+      if (!drow || drow.length === 0) {
         return json(403, { ok: false, error: "not a member of this tenant" });
+      }
+      if (d.created_by !== caller && drole !== "owner" && drole !== "admin") {
+        return json(403, { ok: false, error: "only the uploader or a workspace manager can delete this file" });
       }
       const { count: chunkCount } = await db.from("chunks")
         .select("chunk_id", { count: "exact", head: true }).eq("document_id", d.id);
       const { error: delErr } = await db.from("documents").delete().eq("id", d.id);
-      if (delErr) return json(500, { ok: false, error: delErr.message });
+      if (delErr) {
+        console.error(JSON.stringify({ scope: "db-error", context: "document delete failed", code: delErr.code }));
+        return json(500, { ok: false, error: "document delete failed" });
+      }
       let objectRemoved = false;
       const { error: objErr } = await db.storage.from(BUCKET).remove([d.storage_path]);
       objectRemoved = !objErr;
@@ -611,6 +704,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     return json(400, { ok: false, error: "unknown action (ingest|ingest-temp|retry|promote|delete-document)" });
   } catch (e) {
-    return json(500, { ok: false, error: e instanceof Error ? e.message.slice(0, 300) : "internal error" });
+    // M-9: static envelope for direct callers; detail stays server-side.
+    console.error(JSON.stringify({ scope: "internal", fn: "ingest-pdf", detail: (e instanceof Error ? e.message : String(e)).slice(0, 200) }));
+    return json(500, { ok: false, error: "internal error" });
   }
 });

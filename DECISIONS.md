@@ -1485,3 +1485,138 @@ D80. Citation excerpts + compact supporting-evidence UI (deployed ask v51)
   ingestion contract) or a future evidence-workspace needs more than the
   verbatim chunk.
 
+D81. Security remediation pass (audit 2026-10-01; implemented, NOT deployed)
+
+- Decision: remediate every actionable audit finding with the smallest safe
+  change that preserves product behavior and the locked RAG design:
+  (a) prompts `v1-*` → `v2-*` isolating retrieved evidence as UNTRUSTED DATA
+  with delimiters, instruction-hierarchy, and a never-reveal-instructions
+  rule (numbering/identity/gate/guard unchanged); (b) `edit-message` Edge
+  Function + `public.edit_message` RPC — server-authorized atomic
+  update+truncate, conversation author or manager only, user-role rows only,
+  1..1000 chars — replacing direct PostgREST message mutations (RLS
+  additionally narrowed to owner-or-manager as defense in depth);
+  (c) ownership RLS for conversations/documents/notebooks deletes/updates
+  (creator-or-manager; reads stay tenant-wide; selection toggles stay
+  collaborative); (d) pipeline-preserving chunk guards (members insert NULL
+  embeddings only while parent is pending/processing; vectors/content
+  immutable afterwards; service_role pipeline unaffected); (e) document
+  identity immutability + `file_size` creator/manager-only + 7-day TTL cap +
+  promotion ownership (uploader/manager); (f) expired-temp hiding from
+  non-uploaders/non-managers in documents/chunks SELECT; (g) tenant_id
+  immutability trigger on all tenant tables; (h) Storage policies pinned to
+  `tenants/<tid>/docs/...`; (i) grant tightening (usage/benchmark/rate
+  tables; future-table defaults lose authenticated writes); (j) per-tenant
+  fixed-window rate limits (`check_rate_limit`, ask 30/query-chunks 60/
+  ingest 10/edit 60 per min, 429+Retry-After, fail-open pre-migration);
+  benchmark endpoints manager-only; conversation-create cap 500/tenant;
+  (k) ingestion magic-byte (`%PDF-`) + 2000-page + 10M-char bounds;
+  (l) CORS https-only echo (no wildcard for browser origins); static
+  error envelopes (detail logged server-side); 30/60/90 s provider timeouts;
+  (m) frontend CSP/frame/headers, link-protocol allowlist, safe ingest-error
+  copy, conversation-read oracle collapse, ordinal-fallback removal;
+  (n) Next.js 16.3.5 → 16.3.8 (GHSA-vcvr-r3jv-pc5j, audit clean).
+  H3C-B (`evidence-reuse.ts`) stays unwired. No streaming/Stop/branching/
+  analytics added.
+- Status: IMPLEMENTED + unit-verified (291/291 shared Deno tests incl. 17
+  new: prompts/M-1, CORS/L-1, safe-error/M-9, rate-limit/H-4; `tsc` clean;
+  `eslint` 0 errors + 1 pre-existing warning; `next build` PASS; `npm audit`
+  0 vulns), DB migration `20261001000000_security_remediation.sql` authored
+  idempotent but NOT applied, functions NOT deployed, production untouched.
+  Needs: migration apply → deploy ask/query-chunks/ingest-pdf/
+  storage-cleanup/benchmark-*/edit-message(new) + frontend → two-user live
+  verification (owner edit OK, non-owner 403; expired-temp hidden;
+  rate-limit 429; manager-only benchmarks).
+- Reason: close the tenant-mutual gaps (message rewrite/wipe, vector
+  forgery, quota/expiry bypass, cost abuse) without rewriting the
+  tenant-shared corpus model or the deterministic quality chain.
+- Consequence: writes narrow to creator-or-manager; reads unchanged except
+  expired temps; prompts version to v2 (gold re-run advised post-deploy);
+  rate limits bound spend per tenant; benchmark surface shrinks to managers.
+- Revisit if: per-user (non-manager) collaboration needs shared edit/delete
+  (would need explicit shared-conversation roles, not silent broadening).
+
+D82. Early request-size rejection for anonymous-abuse hardening (implemented, NOT deployed)
+
+- Decision: all six JWT-protected Edge entry points (`ask`,
+  `query-chunks`, `ingest-pdf`, `edit-message`, `storage-cleanup`,
+  `benchmark-answer`, `benchmark-retrieval`, `benchmark-ingest`) reject
+  requests with `Content-Length` present and > 64 KB **before** `getUser`
+  and before body parsing, with a static `413 { ok: false, error: "request
+  too large" }`. Missing/unparsable `Content-Length` stays allowed
+  (chunked callers); no body parse, no DB read/write, no counter, no
+  provider call on the reject path. Pure helper
+  `_shared/request-size.ts` (+6 unit tests). Legitimate bodies are ~2 KB;
+  the largest legitimate shape (20 benchmark evidence items) stays near
+  ~25 KB. Pilot posture recorded: unauthenticated requests cannot reach
+  Postgres data, Storage objects, retrieval, Jina, Mantle, or authenticated
+  capabilities (auth-before-work verified); remaining accepted risk is
+  anonymous request-volume against Edge/Auth infrastructure. No per-IP
+  throttling, no daily budget, no quota system, no H-2 change, no
+  `verify_jwt`/CORS/rate-limit/membership/provider/frontend changes.
+- Status: IMPLEMENTED + unit-verified (297/297 shared Deno tests incl. 6
+  new; `tsc` clean; `eslint` 0 errors + 1 pre-existing warning; `next
+  build` PASS), functions NOT deployed, production untouched.
+- Revisit if: a legitimate client body ever approaches 64 KB (raise with
+  measured evidence), or an open public launch needs a real perimeter
+  (proxy-managed WAF / per-IP throttle, not in-Edge counters).
+
+D83. P0 cost/abuse controls (implemented, NOT deployed)
+
+- Decision: bound the provider bill without touching retrieval quality,
+  ranking, prompts, models, citations, or generation semantics. Three layers,
+  cheapest first: (1) env kill switch `PROVIDER_KILL_SWITCH` (exact "true",
+  post-membership pre-everything, 503, no persistence, no Retry-After);
+  (2) combined minute+daily gate in one `check_rate_limit` RPC (per-minute
+  tenant+user, per-UTC-day tenant+user, denials counted, advisory-locked,
+  RPC errors fail closed to 503 — reversing the tree's earlier
+  allow-on-any-error, which TDD caught as a contract change); (3) in-flight
+  provider slots (tenant 6 / user 2, one pool for embed/rerank/rewrite/
+  generation/checker, 300 s stale reap, graceful degrade per call site —
+  rewrite/checker skip, rerank falls back to fused order, generation answers
+  429/503 with the existing provider-error shape). Caps in
+  `_shared/cost-control.ts` COST_LIMITS (single source; SQL enforces):
+  ask 30/10 + 1000/100, query-chunks 60/20 + 2000/200, ingest 10/3 + 100/20,
+  edit 60/20 minute-only, benchmark 10/— + 300/— (manager-only retained).
+  Hourly windows considered and rejected (minute+daily bound the integral).
+  Usage lands in new `usage_daily` via definer RPCs (attempts/rejected/
+  provider_calls/tokens_est, best-effort post-hoc, estimate labeled);
+  legacy `usage_counters` untouched per D70. New tables/RPCs extend the
+  unapplied `20261001000000` migration (safe: never applied anywhere);
+  legacy 2-arg `check_rate_limit` overload frozen (its `stable` label fixed
+  to volatile). Wiring: ask (gate+kill, slot per rewrite/generation/checker,
+  503-busy propagation from query-chunks), query-chunks (gate+kill, slots on
+  embed/rerank), ingest/edit (gate+kill where provider-adjacent; edit has no
+  provider call — its regeneration spend is gated at /ask), embed-worker
+  (kill at tick start, one slot per tick, per-batch usage), benchmark-*
+  (gate+kill+slots; manager-only unchanged).
+- Status: DEPLOYED 2026-10-04 (migration `20261001000000` applied via
+  `db query`; 8 functions deployed: ask v52, query-chunks v37, ingest-pdf v38,
+  edit-message v1 new, embed-worker v37, benchmark-retrieval v5,
+  benchmark-answer v3, benchmark-ingest v3; storage-cleanup v4 untouched) +
+  LIVE-VERIFIED: kill drill (503, zero records; restore TransportError once,
+  succeeded on retry; final `false` verified by secret list + 200 probe),
+  user-minute 429s with Retry-After on 12-concurrent burst, slots busy-503
+  with 0 stuck after, synthetic stale slot reaped, member writes denied
+  403/42501 on all counter tables, manager benchmark-allow 200, gold
+  34-case re-run 34/34 HTTP 200 with 4 per-case deltas inside known variance
+  (E3 hit flip from corpus growth 563→899 chunks; C2/G4/F2 gate flips in the
+  amendment/conflict family; label-match identical 0.235). One live-found
+  accounting gap fixed in-gate (minute-denial `rejected` counting; file and
+  prod re-synced via targeted function re-apply). 315/315 shared Deno tests
+  green throughout. Tenant-minute/daily + user-daily branches share the
+  proven return path (unit + SQL review; live trip deferred as too
+  expensive to force); member-deny-as-non-manager and cross-tenant remain
+  BLOCKED (single credential, single tenant).
+- Reason: one user/request must not generate an unbounded provider bill;
+  per-minute alone allows 14.4K/day/user, so daily ceilings are required;
+  fixed windows alone cannot bound simultaneous calls, so slots are required.
+- Consequence: worst-case exposure becomes arithmetic (tenant daily caps +
+  6 concurrent calls) instead of unbounded; blocked traffic persists nothing
+  and returns safe 429/503 the current frontend already renders (no UI
+  change). No hot admin path by design — overrides are constant changes +
+  redeploy, auditable.
+- Revisit if: measured legitimate use approaches any cap (raise with
+  evidence), a second full eval must run same-day as another (benchmark
+  daily 300), or open launch needs per-IP perimeter (proxy WAF, not Edge).
+

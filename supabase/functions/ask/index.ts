@@ -48,6 +48,13 @@ import {
   type RewriteTelemetry,
 } from "../_shared/usage-telemetry.ts";
 import {
+  enforceCostGate,
+  recordProviderUse,
+  withProviderSlot,
+  SlotBusyError,
+} from "../_shared/cost-control.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
+import {
   aggregateCorrectness,
   evaluateAnswer,
   shouldRunChecker,
@@ -92,6 +99,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
+
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -125,6 +136,27 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const { data: mem } = await db.from("memberships")
     .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
   if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+
+  // P0 cost controls (D83): kill switch, then combined per-minute + daily
+  // gate (tenant + user) before any spend (embed, retrieval, rerank,
+  // generation, rewrite, checker). Denials return BEFORE conversation
+  // creation, so blocked requests persist nothing and fuel no retries:
+  // 429 carries Retry-After, 503 carries none (no thundering herd).
+  {
+    const blocked = await enforceCostGate(db, tenantId, caller, "ask");
+    if (blocked) return json(blocked.status, blocked.body);
+  }
+
+  // L-6: bound unbounded conversation creation (spam/DB growth). Normal
+  // use never approaches this; loops creating convs hit 429.
+  const MAX_CONVERSATIONS_PER_TENANT = 500;
+  if (!conversationId) {
+    const { count: convCount } = await db.from("conversations")
+      .select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
+    if ((convCount ?? 0) >= MAX_CONVERSATIONS_PER_TENANT) {
+      return json(429, { ok: false, error: "conversation limit reached for this workspace" });
+    }
+  }
 
   // Conversation: verify ownership or create. History count feeds the
   // clarification gate (referent check); full transcripts are never sent
@@ -168,8 +200,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       },
     ]);
     if (error) {
+      // M-9: never return driver text to the caller. The frontend maps 5xx
+      // to a generic message; direct API callers get a static code.
       console.log(JSON.stringify({ fn: "ask", caller, tenant_id: tenantId, path: "persist-failed", error: error.message.slice(0, 200) }));
-      return error.message.slice(0, 200);
+      return "persistence failed";
     }
     return null;
   }
@@ -302,12 +336,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const { data: srcRows, error: srcErr } = await db.from("notebook_sources")
       .select("document_id")
       .eq("notebook_id", notebookId).eq("tenant_id", tenantId).eq("selected", true);
-    if (srcErr) return json(500, { ok: false, error: srcErr.message });
+    if (srcErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "notebook sources read failed", code: srcErr.code, detail: srcErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "notebook sources read failed" });
+    }
     const ids = [...new Set((srcRows ?? []).map((r: { document_id: string }) => r.document_id))];
     if (ids.length > 0) {
       const { data: live, error: liveErr } = await db.from("documents")
         .select("id").eq("tenant_id", tenantId).in("id", ids).is("archived_at", null);
-      if (liveErr) return json(500, { ok: false, error: liveErr.message });
+      if (liveErr) {
+        console.error(JSON.stringify({ scope: "db-error", context: "notebook documents read failed", code: liveErr.code, detail: liveErr.message.slice(0, 200) }));
+        return json(500, { ok: false, error: "notebook documents read failed" });
+      }
       scopedDocIds = (live ?? []).map((r: { id: string }) => r.id);
     }
   }
@@ -327,7 +367,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .eq("status", "ready")
       .is("archived_at", null)
       .gt("expires_at", nowIso);
-    if (tempErr) return json(500, { ok: false, error: tempErr.message });
+    if (tempErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "temporary documents read failed", code: tempErr.code, detail: tempErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "temporary documents read failed" });
+    }
     tempDocIds = [...new Set((tempRows ?? []).map((r: { id: string }) => r.id))];
   }
   const combined = combineScopes({
@@ -384,20 +427,40 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const rewriteModelId = Deno.env.get("ANSWER_MODEL_ID") ?? "";
       const rewriteKey = Deno.env.get("MANTLE_API_KEY") ?? "";
       if (rewriteModelId && rewriteKey) {
-        const resolution = await resolveRetrievalQuery({
-          classification: followUpClass,
-          currentQuery: query,
-          previousUserQuestion: contextRead.previousUserQuestion,
-          modelId: rewriteModelId,
-          callModel: (prompt) => callRewriteModel({
-            url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
-            apiKey: rewriteKey,
-            model: rewriteModelId,
-            prompt,
-          }),
-        });
-        retrievalQuery = resolution.retrievalQuery;
-        rewritePart = resolution.rewrite;
+        // Slot-busy falls back to the original query: the rewrite is an
+        // optimization, never a correctness requirement (gate/generation
+        // still see the authoritative user question).
+        try {
+          const resolution = await withProviderSlot(db, tenantId, caller, () =>
+            resolveRetrievalQuery({
+              classification: followUpClass,
+              currentQuery: query,
+              previousUserQuestion: contextRead.previousUserQuestion,
+              modelId: rewriteModelId,
+              callModel: (prompt) => callRewriteModel({
+                url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
+                apiKey: rewriteKey,
+                model: rewriteModelId,
+                prompt,
+              }),
+            }));
+          retrievalQuery = resolution.retrievalQuery;
+          rewritePart = resolution.rewrite;
+          if (resolution.rewrite.attempted) {
+            await recordProviderUse(db, tenantId, caller, "ask",
+              Math.ceil(((resolution.rewrite.input_chars ?? 0) + (resolution.rewrite.output_chars ?? 0)) / 4));
+          }
+        } catch (e) {
+          if (e instanceof SlotBusyError) {
+            rewritePart = rewriteTelemetry({
+              attempted: false, applied: false, fallback: false, reason: "slot-busy",
+              inputChars: 0, outputChars: 0, latencyMs: 0, modelId: null,
+              inputTokens: null, outputTokens: null,
+            });
+          } else {
+            throw e;
+          }
+        }
       } else {
         rewritePart = rewriteTelemetry({
           attempted: false, applied: false, fallback: false, reason: "model-unavailable",
@@ -448,10 +511,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
         tenant_id: tenantId, query: retrievalQuery,
         ...(combined.ids ? { document_ids: combined.ids } : {}),
       }),
+      // L-7: bound internal retrieval so a hung query-chunks cannot hold
+      // this invocation to the platform timeout.
+      signal: AbortSignal.timeout(60_000),
     });
     if (!r.ok) {
       const t = (await r.text()).slice(0, 200);
-      return json(502, { ok: false, error: `retrieval failed: ${t}` });
+      console.error(JSON.stringify({ scope: "retrieval", context: "query-chunks transport failed", detail: t }));
+      // Propagate cost-control signals honestly instead of relabeling them:
+      // 429/503 from retrieval mean "back off", not "retrieval is broken".
+      if (r.status === 429 || r.status === 503) {
+        return json(r.status, { ok: false, error: "workspace is busy; retry shortly" });
+      }
+      return json(502, { ok: false, error: "retrieval failed" });
     }
     const rj = await r.json() as {
       ok?: boolean; error?: string; evidence?: EvidenceItem[]; query_tokens?: number;
@@ -459,14 +531,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
       rerank?: (RerankTelemetry & { fused_candidates: number }) | null;
       embedding?: EmbeddingTelemetry | null;
     };
-    if (!rj.ok) return json(502, { ok: false, error: `retrieval failed: ${String(rj.error ?? "unknown").slice(0, 200)}` });
+    if (!rj.ok) {
+      console.error(JSON.stringify({ scope: "retrieval", context: "query-chunks failed", detail: String(rj.error ?? "unknown").slice(0, 200) }));
+      return json(502, { ok: false, error: "retrieval failed" });
+    }
     retrieved = rj.evidence ?? [];
     retrievalTokens = rj.query_tokens ?? 0;
     qcCandidates = rj.candidates ?? null;
     qcRerank = rj.rerank ?? null;
     qcEmbedding = rj.embedding ?? null;
   } catch (e) {
-    return json(502, { ok: false, error: `retrieval failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` });
+    console.error(JSON.stringify({ scope: "retrieval", context: "query-chunks threw", detail: (e instanceof Error ? e.message : String(e)).slice(0, 120) }));
+    return json(502, { ok: false, error: "retrieval failed" });
   }
   const retrievalMs = Math.round(performance.now() - tR0);
 
@@ -547,7 +623,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let inputTokens = 0;
   let outputTokens = 0;
   try {
-    const r = await fetch(`${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`, {
+    const r = await withProviderSlot(db, tenantId, caller, () => fetch(`${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${mantleKey}`,
@@ -559,7 +635,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         temperature: 0.0,
         max_tokens: MAX_TOKENS,
       }),
-    });
+      // L-7: bound generation so a stalled provider cannot hold the Edge
+      // invocation open (availability + H-4 cost amplification).
+      signal: AbortSignal.timeout(90_000),
+    }));
     if (!r.ok) {
       const mapped = mapMantleFailure(r.status, await r.text());
       const failedGenerationMs = Math.round(performance.now() - tG0);
@@ -599,7 +678,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
     rawAnswer = parsed.text;
     inputTokens = parsed.inputTokens;
     outputTokens = parsed.outputTokens;
+    await recordProviderUse(db, tenantId, caller, "ask", inputTokens + outputTokens);
   } catch (e) {
+    // Slot-busy degrades exactly like provider throttling: persist the same
+    // provider-error shape (no new label, no UI change) and return 429
+    // WITHOUT Retry-After so a busy workspace does not thundering-herd.
+    if (e instanceof SlotBusyError) {
+      const busyMs = Math.round(performance.now() - tG0);
+      const telemetry = buildTelemetry({
+        router: routerTelemetry, context: contextPartFinal, ...telemetrySections,
+        generation: generationTelemetry({ calls: 0, inputTokens: null, outputTokens: null, latencyMs: busyMs }),
+      });
+      await persistAssistant(
+        "The workspace is busy right now. Please try again shortly.",
+        "provider-error", sources,
+        { answer_model: modelId, prompt: promptVersion },
+        { retrieval_ms: retrievalMs, total_ms: Math.round(performance.now() - t0), telemetry }, null,
+      );
+      return json(429, { ok: false, error: "workspace is busy; retry shortly", telemetry });
+    }
     const msg = e instanceof Error ? e.message : String(e);
     const failedGenerationMs = Math.round(performance.now() - tG0);
     const telemetry = buildTelemetry({
@@ -693,21 +790,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } | null = null;
   let aggregationMs: number | null = null;
   if (shouldRunChecker(checkerEnabled, gate.verdict)) {
-    const outcome = await evaluateAnswer({
-      fetchFn: fetch,
-      url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
-      mantleKey,
-      model: modelId,
-      input: {
-        question: query,
-        answer,
-        evidence: retrieved.map((e, i) => ({ n: i + 1, page: e.page, text: e.content })),
-        gate_verdict: gate.verdict as GateVerdictIn,
-        citations: citedIds.map((n) => ({ n, chunk_ref: sources[n - 1]?.chunk_id ?? `S${n}` })),
-      },
-    });
-    if (outcome.invoked) {
-      correctnessVerdict = outcome.verdict;
+    // Advisory only: slot-busy skips the check (never blocks the answer).
+    try {
+      const outcome = await withProviderSlot(db, tenantId, caller, () => evaluateAnswer({
+        fetchFn: fetch,
+        url: `${MANTLE_BASE_URL}${MANTLE_CHAT_PATH}`,
+        mantleKey,
+        model: modelId,
+        input: {
+          question: query,
+          answer,
+          evidence: retrieved.map((e, i) => ({ n: i + 1, page: e.page, text: e.content })),
+          gate_verdict: gate.verdict as GateVerdictIn,
+          citations: citedIds.map((n) => ({ n, chunk_ref: sources[n - 1]?.chunk_id ?? `S${n}` })),
+        },
+      }));
+      if (outcome.invoked) {
+        await recordProviderUse(db, tenantId, caller, "ask",
+          (outcome.outputTokens ?? 0) > 0 ? (outcome.outputTokens as number) : 500);
+        correctnessVerdict = outcome.verdict;
       correctnessMs = outcome.latencyMs;
       correctness = {
         invoked: true,
@@ -727,6 +828,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
         fn: "ask", caller, tenant_id: tenantId, path: "correctness",
         verdict: outcome.verdict, invalid_reason: outcome.invalidReason,
         latency_ms: outcome.latencyMs,
+      }));
+      }
+    } catch (e) {
+      // Slot-busy (or slot-infra failure inside the wrapper cannot happen —
+      // withProviderSlot only throws SlotBusyError): skip the advisory check.
+      if (!(e instanceof SlotBusyError)) throw e;
+      console.log(JSON.stringify({
+        fn: "ask", caller, tenant_id: tenantId, path: "correctness",
+        verdict: "skipped", invalid_reason: "slot-busy",
       }));
     }
   }

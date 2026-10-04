@@ -47,8 +47,32 @@ import {
 } from "@/lib/api/documents";
 import { normalizeApiError } from "@/lib/api/errors";
 import type { ConversationFileRow, IngestJobRow } from "@/lib/api/types";
-import { compactNumber, timeUntil, truncate } from "@/lib/format";
+import { compactNumber, timeUntil } from "@/lib/format";
 import { cn } from "cn";
+
+/**
+ * L-3: ingest failure text is backend-written (parser/embedding/provider
+ * detail, storage keys). Never render it verbatim — map our own envelope
+ * copy through and fall back to a generic message. This upholds the
+ * errors.ts discipline ("never surface a raw driver message").
+ */
+function safeIngestError(raw: string | null | undefined): string {
+  const text = String(raw ?? "");
+  // Own server-authored messages we deliberately surface (ingest-pdf fail()
+  // copy for user-actionable states). Match on stable prefixes only.
+  if (/duplicate of/i.test(text)) return "This file is already in the workspace.";
+  if (/no extractable text|scanned\/image-only/i.test(text)) {
+    return "No readable text was found in this PDF.";
+  }
+  if (/workspace chunk budget exceeded/i.test(text)) {
+    return "The workspace has reached its indexed-content limit.";
+  }
+  if (/workspace storage budget|storage budget/i.test(text)) {
+    return "The workspace has reached its storage limit.";
+  }
+  if (/file is .*limit is 25/i.test(text)) return "This file exceeds the 25 MB limit.";
+  return "Processing failed. Try again or re-upload the file.";
+}
 
 /**
  * Files in this conversation — temporary chat files (D60).
@@ -428,7 +452,7 @@ function ConversationFileItem({
           </p>
           {failed && job?.last_error ? (
             <p className="text-muted-foreground/70 mt-1 text-2xs text-pretty">
-              {truncate(job.last_error, 160)}
+              {safeIngestError(job.last_error)}
             </p>
           ) : null}
           {processing ? (

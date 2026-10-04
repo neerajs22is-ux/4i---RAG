@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Truthful request status.
@@ -16,14 +16,30 @@ import { useEffect, useState } from "react";
  *  < 15 s   "Still answering…"
  *  ≥ 15 s   "Taking longer than usual…"
  */
-export function RequestStatus({ startedAt }: { startedAt: number }) {
+export function RequestStatus({
+  startedAt,
+  autoFocus = false,
+}: {
+  startedAt: number;
+  /**
+   * Move focus here on mount (edit regeneration). The normal send flow
+   * leaves focus in the composer; only an explicitly requested pending row
+   * steals it, so keyboard users land where the action is.
+   */
+  autoFocus?: boolean;
+}) {
   const [elapsedMs, setElapsedMs] = useState(0);
+  const statusRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const tick = () => setElapsedMs(Date.now() - startedAt);
     const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
   }, [startedAt]);
+
+  useEffect(() => {
+    if (autoFocus) statusRef.current?.focus({ preventScroll: true });
+  }, [autoFocus]);
 
   const seconds = Math.floor(elapsedMs / 1000);
   const label =
@@ -34,7 +50,13 @@ export function RequestStatus({ startedAt }: { startedAt: number }) {
         : "Taking longer than usual";
 
   return (
-    <div role="status" aria-live="polite" className="flex items-center gap-2.5">
+    <div
+      ref={statusRef}
+      role="status"
+      aria-live="polite"
+      tabIndex={-1}
+      className="flex items-center gap-2.5 outline-none"
+    >
       <span className="relative flex size-2 shrink-0" aria-hidden="true">
         <motion.span
           className="bg-primary absolute inline-flex size-2 rounded-full"

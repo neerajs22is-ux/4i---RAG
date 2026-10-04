@@ -125,6 +125,19 @@ function buildComponents(
           );
         }
       }
+      // L-4: model output is untrusted. Only render safe navigations.
+      // Anything else (javascript:, data:, file:, custom schemes) renders
+      // as inert text so a prompt-injected link cannot become clickable.
+      // rehype-sanitize already strips dangerous protocols; this is
+      // defense-in-depth that holds even if the sanitizer schema drifts.
+      const safeHref =
+        typeof href === "string" &&
+        (/^(https?:\/\/|mailto:|#cite-)/i.test(href) ||
+          href.startsWith("/") ||
+          href.startsWith("#"));
+      if (!safeHref) {
+        return <span className="underline underline-offset-2">{children}</span>;
+      }
       return (
         <a
           href={href}

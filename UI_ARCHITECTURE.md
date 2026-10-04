@@ -488,6 +488,10 @@ These follow from the locked backend; violating them would make the UI lie.
    a model.
 8. **No backend changes justified only by UI convenience** — needed additions
    are separate, explicitly authorized, additive steps.
+9. **No client-side authorization** — message edits go through the
+   server-authorized `edit-message` function (owner-or-manager, atomic);
+   conversation reads collapse authorization/not-found so id existence is
+   not disclosed; model links render only for safe protocols (D81).
 
 ## 11. Verification state
 

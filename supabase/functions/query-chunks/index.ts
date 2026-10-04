@@ -20,6 +20,13 @@ import { callReranker, mapRerankedPool, parseRerankResponse, RERANK_API_KEY_ENV 
 import { planRerank, resolveRankedOrder } from "../_shared/rerank-policy.ts";
 import { unionDocIds } from "../_shared/temp-scope.ts";
 import { embeddingTelemetry, rerankTelemetry } from "../_shared/usage-telemetry.ts";
+import {
+  enforceCostGate,
+  recordProviderUse,
+  withProviderSlot,
+  SlotBusyError,
+} from "../_shared/cost-control.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
 
 const JINA_MODEL = "jina-embeddings-v5-text-small";
 const JINA_DIMENSIONS = 1024;
@@ -167,6 +174,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
 
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
+
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
   const db = createClient(
@@ -199,6 +210,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const { data: mem } = await db.from("memberships")
     .select("tenant_id").eq("tenant_id", tenantId).eq("user_id", caller).limit(1);
   if (!mem || mem.length === 0) return json(403, { ok: false, error: "not a member of this tenant" });
+
+  // P0 cost controls (D83): kill switch + minute/daily gate before Jina
+  // spend. Ask-internal calls carry the same user JWT, so they consume the
+  // same quotas — no bypass, no double standard.
+  {
+    const blocked = await enforceCostGate(db, tenantId, caller, "query-chunks");
+    if (blocked) return json(blocked.status, blocked.body);
+  }
 
   // B2 — resolve the allowed document set SERVER-SIDE. The caller may name a
   // notebook (resolved here) or an explicit document list (validated here);
@@ -242,12 +261,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const { data: srcRows, error: srcErr } = await db.from("notebook_sources")
       .select("document_id")
       .eq("notebook_id", notebookId).eq("tenant_id", tenantId).eq("selected", true);
-    if (srcErr) return json(500, { ok: false, error: srcErr.message });
+    if (srcErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "notebook sources read failed", code: srcErr.code, detail: srcErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "notebook sources read failed" });
+    }
     const candidates = [...new Set((srcRows ?? []).map((r: { document_id: string }) => r.document_id))];
     if (candidates.length > 0) {
       const { data: live, error: liveErr } = await db.from("documents")
         .select("id").eq("tenant_id", tenantId).in("id", candidates).is("archived_at", null);
-      if (liveErr) return json(500, { ok: false, error: liveErr.message });
+      if (liveErr) {
+        console.error(JSON.stringify({ scope: "db-error", context: "notebook documents read failed", code: liveErr.code, detail: liveErr.message.slice(0, 200) }));
+        return json(500, { ok: false, error: "notebook documents read failed" });
+      }
       allowedDocIds = (live ?? []).map((r: { id: string }) => r.id);
     }
     scopeEmpty = !allowedDocIds || allowedDocIds.length === 0;
@@ -260,7 +285,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const nowIso = new Date().toISOString();
     const { data: owned, error: ownErr } = await db.from("documents")
       .select("id, expires_at").eq("tenant_id", tenantId).in("id", requestedDocIds).is("archived_at", null);
-    if (ownErr) return json(500, { ok: false, error: ownErr.message });
+    if (ownErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "documents read failed", code: ownErr.code, detail: ownErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "documents read failed" });
+    }
     const ownedIds = new Set(
       ((owned ?? []) as Array<{ id: string; expires_at: string | null }>)
         .filter((r) => r.expires_at === null || r.expires_at > nowIso)
@@ -287,7 +315,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .eq("status", "ready")
       .is("archived_at", null)
       .gt("expires_at", nowIso);
-    if (tempErr) return json(500, { ok: false, error: tempErr.message });
+    if (tempErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "temporary documents read failed", code: tempErr.code, detail: tempErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "temporary documents read failed" });
+    }
     tempDocIds = [...new Set((tempRows ?? []).map((r: { id: string }) => r.id))];
   }
   if (allowedDocIds !== null) {
@@ -306,11 +337,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // those), so results are identical except for the excluded temporaries.
     const { data: tempProbe, error: tempProbeErr } = await db.from("documents")
       .select("id").eq("tenant_id", tenantId).not("expires_at", "is", null).limit(1);
-    if (tempProbeErr) return json(500, { ok: false, error: tempProbeErr.message });
+    if (tempProbeErr) {
+      console.error(JSON.stringify({ scope: "db-error", context: "temporary probe failed", code: tempProbeErr.code, detail: tempProbeErr.message.slice(0, 200) }));
+      return json(500, { ok: false, error: "temporary probe failed" });
+    }
     if (tempProbe && tempProbe.length > 0) {
+      // M-7: explicit persistent set excludes archived (hide-on-archive).
+      // NULL path (no temps) preserves legacy byte-identical behavior.
       const { data: persistent, error: persistentErr } = await db.from("documents")
-        .select("id").eq("tenant_id", tenantId).is("expires_at", null);
-      if (persistentErr) return json(500, { ok: false, error: persistentErr.message });
+        .select("id").eq("tenant_id", tenantId).is("expires_at", null).is("archived_at", null);
+      if (persistentErr) {
+        console.error(JSON.stringify({ scope: "db-error", context: "persistent documents read failed", code: persistentErr.code, detail: persistentErr.message.slice(0, 200) }));
+        return json(500, { ok: false, error: "persistent documents read failed" });
+      }
       allowedDocIds = ((persistent ?? []) as Array<{ id: string }>).map((r) => r.id);
     }
   }
@@ -346,7 +385,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let qvec: number[];
   let queryTokens = 0;
   try {
-    const r = await fetch(JINA_ENDPOINT, {
+    // L-7: bound provider stalls so one hung upstream cannot hold the Edge
+    // invocation to the platform timeout (amplifies H-4 cost abuse).
+    // P0: one provider slot per embed call; busy → honest 503, zero spend.
+    const r = await withProviderSlot(db, tenantId, caller, () => fetch(JINA_ENDPOINT, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -357,7 +399,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         normalized: true,
         embedding_type: "float",
       }),
-    });
+      signal: AbortSignal.timeout(30_000),
+    }));
     if (!r.ok) return json(502, { ok: false, error: `query embed status ${r.status}` });
     const parsed = await r.json() as {
       data?: Array<{ embedding?: number[]; index?: unknown }>; model?: unknown; usage?: { total_tokens?: number };
@@ -372,8 +415,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return json(502, { ok: false, error: "invalid query vector" });
     }
     queryTokens = parsed.usage?.total_tokens ?? 0;
+    await recordProviderUse(db, tenantId, caller, "query-chunks",
+      queryTokens > 0 ? queryTokens : Math.ceil(query.length / 4));
   } catch (e) {
-    return json(502, { ok: false, error: `query embed failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` });
+    if (e instanceof SlotBusyError) return json(503, { ok: false, error: "workspace is busy" });
+    console.error(JSON.stringify({ scope: "provider", context: "query embed failed", detail: (e instanceof Error ? e.message : String(e)).slice(0, 120) }));
+    return json(502, { ok: false, error: "query embed failed" });
   }
   const embedMs = Math.round(performance.now() - tE0);
 
@@ -388,7 +435,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     p_lex_n: lexN,
     p_document_ids: allowedDocIds,
   });
-  if (rpcErr) return json(500, { ok: false, error: rpcErr.message });
+  if (rpcErr) {
+    console.error(JSON.stringify({ scope: "db-error", context: "match_chunks failed", code: rpcErr.code, detail: rpcErr.message.slice(0, 200) }));
+    return json(500, { ok: false, error: "retrieval failed" });
+  }
   const retrievalMs = Math.round(performance.now() - tR0);
   const cands = (rows ?? []) as Candidate[];
 
@@ -420,17 +470,36 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (rerankPlan.kind === "run") {
     const rerankDocuments = pool.map((e) => e.row.content);
     rerankInputChars = rerankDocuments.reduce((sum, text) => sum + text.length, 0);
-    const rerankCall = await callReranker({
-      apiKey,
-      query,
-      documents: rerankDocuments,
-      topN: Math.min(finalK, pool.length),
-      maxCandidates: CANDIDATE_CAP,
-    });
+    // P0: one provider slot per rerank call. Slot-busy degrades to fused
+    // order exactly like a reranker outage (never a retrieval failure).
+    let rerankCall;
+    try {
+      rerankCall = await withProviderSlot(db, tenantId, caller, () => callReranker({
+        apiKey,
+        query,
+        documents: rerankDocuments,
+        topN: Math.min(finalK, pool.length),
+        maxCandidates: CANDIDATE_CAP,
+      }));
+    } catch (e) {
+      if (!(e instanceof SlotBusyError)) throw e;
+      console.log(JSON.stringify({ fn: "query-chunks", path: "rerank-busy" }));
+      rerankCall = {
+        ok: false as const,
+        kind: "server" as const,
+        status: null as number | null,
+        detail: "rerank skipped: workspace busy",
+        latencyMs: 0,
+      };
+    }
     if (rerankCall.ok) {
       const parsed = parseRerankResponse(rerankCall.payload, pool.length, Math.min(finalK, pool.length));
       if (parsed.ok) {
         rerankProviderTokens = parsed.usageTokens;
+        await recordProviderUse(db, tenantId, caller, "query-chunks",
+          rerankProviderTokens != null && rerankProviderTokens > 0
+            ? rerankProviderTokens
+            : Math.ceil(rerankInputChars / 4));
         const mapped = mapRerankedPool(pool, parsed.ranked);
         const resolved = resolveRankedOrder(pool, mapped);
         ordered = resolved.ordered;

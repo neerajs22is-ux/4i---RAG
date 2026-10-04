@@ -46,6 +46,12 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
+  claimProviderSlot,
+  killSwitchEngaged,
+  recordProviderUse,
+  releaseProviderSlot,
+} from "../_shared/cost-control.ts";
+import {
   EMBED_DIMENSIONS,
   EMBED_MODEL,
   EMBED_NORMALIZED,
@@ -290,6 +296,8 @@ async function runEmbeddingPass(
       ));
       const persistMs = Math.round(performance.now() - persistStart);
       batchStats.push({ size: batch.length, jina_ms: jinaMs, persist_ms: persistMs, tokens: parsed.tokens });
+      // P0 accounting (D83): per-batch provider spend, best-effort.
+      await recordProviderUse(admin, job.tenant_id, null, "embed-worker", parsed.tokens);
       let persistFailed = 0;
       for (const outcome of outcomes) {
         if (outcome.ok) {
@@ -428,6 +436,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const log = (extra: Record<string, unknown>) =>
     console.log(JSON.stringify({ fn: "embed-worker", ...extra }));
 
+  // P0 kill switch (D83): stop embedding spend without touching jobs.
+  // Pending chunks stay pending; the next tick after switch-off resumes
+  // exactly like any tick boundary (durable NULL scan, no corruption).
+  if (killSwitchEngaged()) {
+    log({ tick: "idle", reason: "kill-switch" });
+    return json(200, { ok: true, idle: true, killed: true });
+  }
+
   let body: { tick?: unknown; job_id?: unknown } = {};
   try {
     body = await req.json();
@@ -468,7 +484,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
       log({ tick: "idle", reason: "triggered claim lost (concurrent worker)" });
       return json(200, { ok: true, idle: true, claim_lost: true });
     }
-    return runEmbeddingPass(admin, claimed[0] as ClaimedJob, apiKey, log, t0);
+    // P0 provider slot (D83): one in-flight embedding stream per tenant.
+    // Busy defers (job stays processing; cron/trigger resumes next tick).
+    {
+      const claimedJob = claimed[0] as ClaimedJob;
+      const slot = await claimProviderSlot(admin, claimedJob.tenant_id, null);
+      if (!slot.ok) {
+        log({ tick: "idle", reason: "provider-busy", job_id: claimedJob.id });
+        return json(200, { ok: true, idle: true, deferred: true });
+      }
+      try {
+        return await runEmbeddingPass(admin, claimedJob, apiKey, log, t0);
+      } finally {
+        await releaseProviderSlot(admin, claimedJob.tenant_id, null);
+      }
+    }
   }
 
   // 1. Find the oldest idle embedding-pending job (parse done, still processing).
@@ -513,5 +543,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json(200, { ok: false, error: "document missing for job" });
   }
 
-  return runEmbeddingPass(admin, job, apiKey, log, t0);
+  // P0 provider slot (D83): see triggered path above for semantics.
+  {
+    const slot = await claimProviderSlot(admin, job.tenant_id, null);
+    if (!slot.ok) {
+      log({ tick: "idle", reason: "provider-busy", job_id: job.id });
+      return json(200, { ok: true, idle: true, deferred: true });
+    }
+    try {
+      return await runEmbeddingPass(admin, job, apiKey, log, t0);
+    } finally {
+      await releaseProviderSlot(admin, job.tenant_id, null);
+    }
+  }
 });

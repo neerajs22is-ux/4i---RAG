@@ -31,8 +31,8 @@ import { ask } from "@/lib/api/client";
 import {
   createConversation,
   deleteMessagesByIds,
+  editMessage,
   listMessages,
-  updateMessageContent,
 } from "@/lib/api/conversations";
 import { ApiError, normalizeApiError, type ApiErrorKind } from "@/lib/api/errors";
 import type { MessageRow } from "@/lib/api/types";
@@ -76,7 +76,7 @@ import { DURATION, EASE } from "@/lib/motion";
 type ChatItem =
   | { kind: "user"; id: string; content: string; entrance?: boolean }
   | { kind: "answer"; id: string; view: AnswerView; entrance?: boolean }
-  | { kind: "pending"; id: string; startedAt: number }
+  | { kind: "pending"; id: string; startedAt: number; focus?: boolean }
   | {
       kind: "error";
       id: string;
@@ -242,7 +242,7 @@ export function ChatView({
    * second Enter keypress. Mirrors `editingBusy`.
    */
   const editingBusyRef = useRef(false);
-  /** Live mirror of `items` for the async edit flow. */
+  /** Live mirror of `items` for synchronous snapshots on submit. */
   const itemsRef = useRef<ChatItem[]>([]);
   useEffect(() => {
     itemsRef.current = items;
@@ -500,15 +500,6 @@ export function ChatView({
     void send(item.question);
   }
 
-  /**
-   * Latest `runEditFlow`, mirrored for error-item retries (avoids stale
-   * closures when the owning render is long gone). Assigned after the flow
-   * is defined below.
-   */
-  const runEditFlowRef = useRef<
-    ((itemId: string, text: string) => Promise<void>) | null
-  >(null);
-
   /** Retry only the finalize step (re-list → delete → settle). */
   const retryFinalize = useCallback(async () => {
     const pending = pendingFinalizeRef.current;
@@ -551,8 +542,18 @@ export function ChatView({
    * follow-up rewrite input (retrieval-query wording only); the gate,
    * generation and citations always use the submitted edited question.
    */
+  /**
+   * Submit an edit: snapshot the transcript, optimistically show the edited
+   * message with a pending assistant row beneath it, close the editor, and
+   * run the flow. The snapshot is the rollback target — on failure the UI
+   * returns to exactly this state plus one error item.
+   *
+   * Declared after runEditFlow (which it invokes): function declarations
+   * hoist, so the mutual reference stays valid without a TDZ access.
+   */
+
   const runEditFlow = useCallback(
-    async (itemId: string, text: string) => {
+    async (itemId: string, text: string, snapshot: ChatItem[]) => {
       if (!activeWorkspace || editingBusyRef.current) return;
       const conversationId = activeIdRef.current;
       if (!conversationId) return;
@@ -562,20 +563,19 @@ export function ChatView({
       setEditingBusy(true);
       const editTag = `edit-${Date.now()}`;
       try {
-        const clientUsers = itemsRef.current.filter(
+        const clientUsers = snapshot.filter(
           (entry): entry is Extract<ChatItem, { kind: "user" }> =>
             entry.kind === "user",
         );
         const clientIndex = clientUsers.findIndex((u) => u.id === itemId);
+        void clientIndex;
         const rows = await listMessages(conversationId);
+        // L-5: never resolve by client ordinal. A synthetic pending id or a
+        // concurrent append could map to the wrong persisted row and
+        // overwrite another message. Only a persisted id match may be
+        // edited; otherwise fail closed with not-found.
         const direct = rows.find((r) => r.id === itemId);
-        const dbUsers = rows.filter((r) => r.role === "user");
-        const edited =
-          direct && direct.role === "user"
-            ? direct
-            : clientIndex >= 0
-              ? (dbUsers[clientIndex] ?? null)
-              : null;
+        const edited = direct && direct.role === "user" ? direct : null;
         if (!edited) {
           throw new ApiError("not-found", { source: "messages" });
         }
@@ -591,10 +591,23 @@ export function ChatView({
             r.id !== edited.id &&
             Date.parse(r.created_at) > editedTime,
         );
-        await updateMessageContent(
+        // H-1: server-authorized atomic edit. The tail (stale turns after
+        // the edited message) is resolved from the fresh read and sent with
+        // the update in ONE transaction — no window where the new content
+        // is saved but stale turns remain, and ownership is enforced
+        // server-side (author or manager).
+        const tailIds = rows
+          .filter(
+            (r) =>
+              r.id !== edited.id && Date.parse(r.created_at) >= editedTime,
+          )
+          .map((r) => r.id);
+        await editMessage(
           activeWorkspace.tenantId,
+          conversationId,
           edited.id,
           trimmed,
+          tailIds,
         );
         const response = await ask({
           tenantId: activeWorkspace.tenantId,
@@ -653,37 +666,31 @@ export function ChatView({
         recordAskOutcome(true);
         setAnnouncement(answerAnnouncement(view));
       } catch (error) {
+        // Roll back to the pre-submit snapshot: the transcript shows exactly
+        // what the database holds (the edited text may already be saved, but
+        // nothing was removed), plus one error item that retries everything.
         const normalized = normalizeApiError(error, "ask");
         recordAskOutcome(false, normalized.kind);
         const errId = `${editTag}-e`;
-        setItems((prev) => {
-          const idx = prev.findIndex(
-            (entry) => entry.kind === "user" && entry.id === itemId,
-          );
-          const fixed =
-            idx >= 0
-              ? prev.map((entry, i) =>
-                  i === idx && entry.kind === "user"
-                    ? { ...entry, content: trimmed }
-                    : entry,
-                )
-              : prev;
-          return [
-            ...fixed,
-            {
-              kind: "error",
-              id: errId,
-              question: trimmed,
-              message:
-                "Couldn't regenerate the answer. Nothing was removed — try again.",
-              kindOf: normalized.kind,
-              retry: () => {
-                void runEditFlowRef.current?.(itemId, trimmed);
-              },
-              retryLabel: "Try again",
+        setItems([
+          ...snapshot.map((entry) =>
+            entry.kind === "user" && entry.id === itemId
+              ? { ...entry, content: trimmed }
+              : entry,
+          ),
+          {
+            kind: "error",
+            id: errId,
+            question: trimmed,
+            message:
+              "Couldn't regenerate the answer. Nothing was removed — try again.",
+            kindOf: normalized.kind,
+            retry: () => {
+              void beginEditSubmit(itemId, trimmed);
             },
-          ];
-        });
+            retryLabel: "Try again",
+          },
+        ]);
         setEditingId(null);
       } finally {
         editingBusyRef.current = false;
@@ -693,9 +700,30 @@ export function ChatView({
     [activeWorkspace, notebookId, retryFinalize],
   );
 
-  useEffect(() => {
-    runEditFlowRef.current = runEditFlow;
-  }, [runEditFlow]);
+  function beginEditSubmit(itemId: string, text: string) {
+    if (editingBusyRef.current) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const snapshot = itemsRef.current;
+    const idx = snapshot.findIndex(
+      (entry) => entry.kind === "user" && entry.id === itemId,
+    );
+    if (idx < 0) return;
+    editingBusyRef.current = true;
+    setEditingBusy(true);
+    setItems([
+      ...snapshot.slice(0, idx),
+      { ...(snapshot[idx] as Extract<ChatItem, { kind: "user" }>), content: trimmed },
+      {
+        kind: "pending",
+        id: `edit-${Date.now()}-p`,
+        startedAt: Date.now(),
+        focus: true,
+      },
+    ]);
+    setEditingId(null);
+    void runEditFlow(itemId, trimmed, snapshot);
+  }
 
   function startEdit(itemId: string) {
     if (editingBusyRef.current) return;
@@ -710,8 +738,7 @@ export function ChatView({
   }
 
   function submitEdit(itemId: string, text: string) {
-    if (editingBusyRef.current) return;
-    void runEditFlow(itemId, text);
+    beginEditSubmit(itemId, text);
   }
 
   /* ------------------------------------------------- edit affordances */
@@ -860,7 +887,10 @@ export function ChatView({
                     ) : null}
 
                     {item.kind === "pending" ? (
-                      <RequestStatus startedAt={item.startedAt} />
+                      <RequestStatus
+                        startedAt={item.startedAt}
+                        autoFocus={item.focus}
+                      />
                     ) : null}
 
                     {item.kind === "note" ? (
@@ -959,12 +989,12 @@ export function ChatView({
           <Composer
             onSubmit={send}
             busy={sending}
-            disabled={composerDisabled || editingId !== null}
+            disabled={composerDisabled || editingId !== null || editingBusy}
             focusToken={focusToken}
             disabledReason={
               composerDisabled
                 ? "No workspace is available"
-                : editingId !== null
+                : editingId !== null || editingBusy
                   ? "Finish or cancel the edit to send a new message"
                   : undefined
             }

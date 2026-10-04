@@ -49,8 +49,10 @@ Edge Functions (Deno), all ACTIVE:
 | `query-chunks` | Query embedding + hybrid retrieval + rerank (optional notebook/document scope) | caller JWT |
 | `ask` | Full answering pipeline (see 1.2) | caller JWT |
 | `storage-cleanup` | Bounded orphan-object cleanup for one tenant (see 1.16) | caller JWT + membership; `apply` requires owner/admin |
+| `edit-message` | Server-authorized linear edit + truncate (D81; NOT deployed): ownership-checked atomic RPC | gateway `verify_jwt` on; caller JWT data plane |
 
-All browser-facing functions share `_shared/cors.ts` (D46); `embed-worker` is
+All browser-facing functions share `_shared/cors.ts` (D46; D81 tightened
+default: https-only echo, no wildcard for browser origins); `embed-worker` is
 cron-only and does not.
 
 `/ask` request pipeline (one invocation):
@@ -193,8 +195,10 @@ before any conflict detector.
   `qwen.qwen3-235b-a22b-2507-v1:0`). Never hardcoded, never silently substituted.
 - `temperature 0.0`, `max_tokens 1024`, single user message = frozen rendered
   prompt.
-- Prompts are frozen/versioned: `PROMPT_VERSION = "v1"` with modes
-  `v1-direct`, `v1-partial`, `v1-conflict`. The model must cite evidence as
+- Prompts are frozen/versioned: `PROMPT_VERSION = "v2"` (D81; was `v1`) with modes
+  `v2-direct`, `v2-partial`, `v2-conflict`. Evidence blocks are delimited as
+  UNTRUSTED DATA with an instruction-hierarchy and never-reveal-instructions
+  rule; numbering/identity/gate/guard semantics unchanged. The model must cite evidence as
   `[Sn]`; refusal text is a fixed constant.
 - No `bedrock-runtime` SDK, no Converse/InvokeModel, no EC2, no local model, no
   provider fallback or substitution anywhere.
@@ -371,10 +375,14 @@ Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
 
 - Supabase project ref `uqlpfgtkmsaexmtieulp`, region `ap-southeast-2`.
 - AWS Bedrock Mantle region `ap-south-1`; Jina server-side.
-- Deployed and ACTIVE (observed 2026-09-29 via `functions list`):
-  `ingest-pdf` **v37**, `embed-worker` **v36** (+ per-minute Cron),
-  `query-chunks` **v36**, `ask` **v51** (citation excerpts, D80),
-  `storage-cleanup` **v4**.
+- Deployed and ACTIVE (observed 2026-10-04 via `functions list`):
+  `ingest-pdf` **v38**, `embed-worker` **v37** (+ per-minute Cron),
+  `query-chunks` **v37**, `ask` **v52** (D83 cost controls),
+  `storage-cleanup` **v4** (unchanged, out of D83 scope),
+  `benchmark-retrieval` **v5**, `benchmark-answer` **v3**,
+  `benchmark-ingest` **v3**, `edit-message` **v1** (new).
+  Migration `20261001000000` (D81 + D83) applied 2026-10-04.
+  `PROVIDER_KILL_SWITCH` present, set `false` (verified).
 - `CORRECTNESS_CHECKER_ENABLED` OFF. No other feature flag enabled.
 - Bucket `company-documents` is private with `file_size_limit = 25 MiB`; the
   corpus grows through normal use.**Production snapshot (2026-09-17):** 2
@@ -439,6 +447,41 @@ in `DECISIONS.md` Part 4 and a validated report under `eval/runs/`.
   the frozen baseline, gate/label reproduce the latest chain measurement,
   `unscoped == full-corpus scope` on 34/34, PASS
   (`eval/runs/pre-ui-regression-34-20260917.md`).
+
+## 1.17 Cost/abuse controls (P0, D83 — DEPLOYED 2026-10-04, live-verified)
+
+- **Kill switch** — env `PROVIDER_KILL_SWITCH === "true"` (exact match only).
+  Checked after membership, before quota/slots/conversation-create/provider in
+  `ask`, `query-chunks`, `ingest-pdf`, `embed-worker`, `benchmark-*`
+  (no-provider handlers skip it). 503 safe error, no persistence, no
+  Retry-After. PROVEN live: `true` → 503 in 3.5 s with zero counter/slot
+  rows created; `false` → 200. Secrets apply without redeploy. Operator:
+  `supabase secrets set PROVIDER_KILL_SWITCH=true`, verify with one blocked
+  probe, restore to `false` (one transient CLI TransportError on restore,
+  succeeded on retry — watch restores).
+- **Rate gates** — one `check_rate_limit` RPC per entry: per-minute
+  (tenant+user) + per-UTC-day (tenant+user) fixed windows; denials bump
+  `rejected` in the same transaction (minute-denial counting fixed post-first-
+  probe); advisory lock serializes boundary races. Caps from
+  `_shared/cost-control.ts` COST_LIMITS: ask 30/10 + 1000/100,
+  query-chunks 60/20 + 2000/200, ingest 10/3 + 100/20, edit 60/20 (no daily),
+  benchmark 10/— + 300/—. PROVEN live: 12-concurrent burst → user-minute 429s
+  with `retry_after_sec`; `usage_daily` counts attempts/rejected/provider
+  calls exactly. Tenant-minute/daily branches share the identical return path
+  (unit + SQL review; live trip would cost 30+/100+ calls — deferred).
+- **Provider slots** — one in-flight pool for all provider work
+  (embed/rerank/rewrite/generation/checker): tenant 6, user 2, stale reap
+  300 s. PROVEN live: 12-concurrent burst → ~2 proceed, rest 503 busy;
+  `provider_slots` returns to 0/0 after (release path); synthetic stale row
+  (inflight 9, 10 min old) reaped on next claim with the request admitted.
+  Busy degrades gracefully (rewrite/checker skip, rerank falls back to
+  fused order, generation answers 429/503) — no new labels, no UI change
+  (frontend `throttled`/`backend` kinds already cover both).
+- **Accounting** — `usage_daily` (attempts/rejected/provider_calls/tokens_est
+  per tenant/user/endpoint/day) written via definer RPCs; post-provider writes
+  are best-effort and never gate traffic. `tokens_est` is an estimate
+  (chars/4 or provider-reported usage), never an exact bill. The legacy
+  `usage_counters` table remains untouched (no caller-JWT write path by D70).
 
 ---
 

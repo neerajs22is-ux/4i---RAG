@@ -33,6 +33,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, corsPreflight } from "../_shared/cors.ts";
+import { requestTooLarge } from "../_shared/request-size.ts";
 import {
   classifyAll,
   CLEANUP_VERSION,
@@ -69,6 +70,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const preflight = corsPreflight(req);
   if (preflight) return preflight;
   if (req.method !== "POST") return json(405, { ok: false, error: "POST only" });
+
+  // Anonymous-abuse hardening: reject clearly oversized requests BEFORE
+  // auth/body parsing — header read only, no DB, no provider, no counter.
+  if (requestTooLarge(req)) return json(413, { ok: false, error: "request too large" });
 
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json(401, { ok: false, error: "missing bearer token" });
@@ -121,7 +126,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     foldersScanned++;
     for (let offset = 0; ; offset += LIST_PAGE) {
       const { data, error } = await db.storage.from(BUCKET).list(prefix, { limit: LIST_PAGE, offset });
-      if (error) return json(500, { ok: false, error: `list failed: ${error.message.slice(0, 120)}` });
+      if (error) {
+        console.error(JSON.stringify({ scope: "storage", context: "list failed" }));
+        return json(500, { ok: false, error: "storage list failed" });
+      }
       const entries = (data ?? []) as ListEntry[];
       for (const entry of entries) {
         const full = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -143,13 +151,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // 2. Reference sets from the database (caller JWT; RLS applies).
   const { data: docs, error: docErr } = await db.from("documents")
     .select("id, storage_path").eq("tenant_id", tenantId);
-  if (docErr) return json(500, { ok: false, error: `documents read failed: ${docErr.message.slice(0, 120)}` });
+  if (docErr) {
+    console.error(JSON.stringify({ scope: "db-error", context: "documents read failed" }));
+    return json(500, { ok: false, error: "documents read failed" });
+  }
   const pathById = new Map((docs ?? []).map((d: { id: string; storage_path: string }) => [d.id, d.storage_path]));
   const referencedPaths = new Set((docs ?? []).map((d: { storage_path: string }) => d.storage_path));
 
   const { data: jobs, error: jobErr } = await db.from("ingest_jobs")
     .select("document_id").eq("tenant_id", tenantId).in("status", ["pending", "processing"]);
-  if (jobErr) return json(500, { ok: false, error: `jobs read failed: ${jobErr.message.slice(0, 120)}` });
+  if (jobErr) {
+    console.error(JSON.stringify({ scope: "db-error", context: "jobs read failed" }));
+    return json(500, { ok: false, error: "jobs read failed" });
+  }
   const activePaths = new Set(
     (jobs ?? [])
       .map((j: { document_id: string }) => pathById.get(j.document_id))
@@ -174,7 +188,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const { data: fresh, error: freshErr } = await db.from("documents")
       .select("storage_path").eq("tenant_id", tenantId).in("storage_path", planned);
     if (freshErr) {
-      return json(500, { ok: false, error: `recheck failed: ${freshErr.message.slice(0, 120)}` });
+      console.error(JSON.stringify({ scope: "db-error", context: "recheck failed" }));
+      return json(500, { ok: false, error: "recheck failed" });
     }
     const nowReferenced = new Set((fresh ?? []).map((d: { storage_path: string }) => d.storage_path));
     const safe = planned.filter((path) => !nowReferenced.has(path));
@@ -182,7 +197,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const chunk = safe.slice(i, i + DELETE_CHUNK);
       const { data: removed, error: rmErr } = await db.storage.from(BUCKET).remove(chunk);
       if (rmErr) {
-        deleteErrors.push(rmErr.message.slice(0, 120));
+        console.error(JSON.stringify({ scope: "storage", context: "remove failed" }));
+        deleteErrors.push("remove failed");
         continue;
       }
       const removedNames = new Set((removed ?? []).map((o: { name: string }) => o.name));
@@ -212,7 +228,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .lte("expires_at", nowIso)
       .limit(100);
     if (expiredErr) {
-      return json(500, { ok: false, error: `expired temp read failed: ${expiredErr.message.slice(0, 120)}` });
+      console.error(JSON.stringify({ scope: "db-error", context: "expired temp read failed" }));
+      return json(500, { ok: false, error: "expired temp read failed" });
     }
     const rows = (expired ?? []) as Array<{ id: string; storage_path: string }>;
     tempFound = rows.length;
@@ -258,8 +275,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           }
           tempDeleted++;
           remaining--;
-        } catch (e) {
-          tempErrors.push((e instanceof Error ? e.message : String(e)).slice(0, 120));
+        } catch {
+          tempErrors.push("expired temp delete failed");
         }
       }
     }

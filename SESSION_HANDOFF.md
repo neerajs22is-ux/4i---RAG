@@ -48,15 +48,24 @@ Supabase (project `uqlpfgtkmsaexmtieulp`, `ap-southeast-2`) + Edge Functions +
 Voyage `voyage-4` (1024-dim) + AWS Bedrock **Mantle** (`ap-south-1`, exclusive
 generation path). Detail in `ARCHITECTURE.md` Part 1 and §1.16.
 
-Deployed (all ACTIVE):
+Deployed (all ACTIVE, verified 2026-10-04):
 
 | Function | Version | Role |
 |---|---|---|
-| `ingest-pdf` | **37** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) |
-| `embed-worker` | **36** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) |
-| `query-chunks` | **36** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) |
-| `ask` | **51** | full quality chain, notebook scope (D50) + conversation temp union (D60) + citation excerpts (D80) |
-| `storage-cleanup` | **4** | bounded orphan cleanup (D52) + expired-temp section (D60) |
+| `ingest-pdf` | **38** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) + D81 hardening + D83 cost gate |
+| `embed-worker` | **37** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) + D83 kill switch + provider slot + per-batch usage |
+| `query-chunks` | **37** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) + D83 gate/kill/slots |
+| `ask` | **52** | full quality chain, notebook scope (D50) + conversation temp union (D60) + citation excerpts (D80) + D83 gate/kill/slots/usage |
+| `storage-cleanup` | **4** | bounded orphan cleanup (D52) + expired-temp section (D60) — unchanged by D83 |
+| `benchmark-retrieval` | **5** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `benchmark-answer` | **3** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `benchmark-ingest` | **3** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `edit-message` | **1** | NEW: server-authorized edit + truncate (D81) + D83 gate |
+
+Migration `20261001000000` (D81 + D83 §1b) APPLIED 2026-10-04. `PROVIDER_KILL_SWITCH=false` (drill-verified).
+D83 live proof: kill 503/zero-records, user-minute 429s, slots busy-503 with
+0 stuck, stale reap, member-write 403s, manager benchmark 200, gold 34/34
+with 4 in-variance deltas. Full record: `DECISIONS.md` D83.
 
 Key limits/state: bucket `company-documents` private, `file_size_limit` **25 MiB**
 (D51); upload limits 25 MB/400 MB/60 docs/20,000 chunks/1+3 jobs (D47);
@@ -431,15 +440,41 @@ each pass (D53).
 
 ## 9. Git / deployment state
 
-- Branch `main`, **HEAD `d27b057`** (citation checkpoints `4699f9c`,
-  `1f16902`, `d27b057` committed and pushed; Vercel serves `d27b057`).
-- **Uncommitted (tracked, this pass):** `DECISIONS.md` (D80 frontend-clause
-  accuracy), `SESSION_HANDOFF.md` (this state pass),
-  `web/src/components/chat/assistant-message.tsx` (badge return-to-claim
-  refinement). Commit NOT authorized yet.
-- **Untracked (pre-existing, leave alone):** `brag-output*/`, `deno.lock`,
+- Branch `main`, **HEAD `2dfd12e`** (`feat(chat): add safe user message
+  editing`, 2026-09-30; prior doc claim `d27b057` was stale — corrected
+  here. Deployed frontend version unverified; Vercel previously served
+  `d27b057`, both `4i-rag.vercel.app` and `ask4i.in` observed live 2026-10-01
+  on one identical deployment).
+- **Uncommitted (tracked, security remediation, NOT authorized to commit):**
+  `ARCHITECTURE.md`, `DECISIONS.md` (D81), `SESSION_HANDOFF.md` (this pass),
+  `web/next.config.ts`, `web/package.json`, `web/package-lock.json`,
+  `web/src/components/chat/answer-content.tsx`,
+  `web/src/components/chat/chat-view.tsx`,
+  `web/src/components/chat/conversation-files.tsx`,
+  `web/src/lib/api/conversations.ts`,
+  `supabase/functions/{ask,query-chunks,ingest-pdf,edit-message,storage-cleanup,
+  benchmark-answer,benchmark-retrieval,benchmark-ingest}/index.ts`,
+  `supabase/functions/_shared/{cors,grounding,grounding_test}.ts`,
+  plus pre-existing `web/src/components/chat/request-status.tsx` (untouched
+  by remediation; was dirty before) and the badge refinement in
+  `assistant-message.tsx` (still pending from the prior pass).
+- **Untracked (new, remediation):** `supabase/functions/edit-message/`,
+  `supabase/functions/_shared/{rate-limit,rate-limit_test,safe-error,
+  safe-error_test,cors_test,request-size,request-size_test}.ts`,
+  `supabase/migrations/20261001000000_security_remediation.sql`.
+  **Untracked (new, P0 cost controls D83, 2026-10-04, NOT authorized to
+  commit/deploy):** `supabase/functions/_shared/cost-control.ts`,
+  `cost-control_test.ts` (315/315 shared tests green incl. 18 new),
+  migration §1b (usage_daily + provider_slots + claim/release/record RPCs +
+  7-arg gate), wiring in ask/query-chunks/ingest-pdf/edit-message/
+  embed-worker/benchmark-*; `BENCHMARK_REPORT.md`, `BENCHMARK_RESULTS.json`,
+  `BENCHMARK_PER_CASE.json`, `SECURITY_FINDINGS.json` (baseline artifacts,
+  leave alone). Next step is the separate production-readiness/deployment
+  gate (migration apply → deploy → kill drill + 429/busy/manager-only
+  verification + gold re-run).
+  **Untracked (pre-existing, leave alone):** `brag-output*/`, `deno.lock`,
   `eval/cases/followup_*` golds, `supabase/functions/_shared/evidence-reuse*.ts`
-  (H3C-B history, unwired), `super-video-maker-skill/`.
+  (H3C-B history, still unwired — verified, no imports added), `super-video-maker-skill/`.
 - Backend functions are **deployed** (versions in §3; `ask` v51 source was
   reconciled in `d27b057`); the frontend `d27b057` is **deployed on Vercel**.
 - Test account `test@rag.com` is RETIRED — forget it fully. Working admin
@@ -459,8 +494,9 @@ each pass (D53).
 
 ## 10. Important files
 
-- `ARCHITECTURE.md` (Part 1 = current; §1.16 = B1–B6 + temp D60), `UI_ARCHITECTURE.md`,
-  `DECISIONS.md`, `eval/README.md`.
+- `ARCHITECTURE.md` (Part 1 = current; §1.16 = B1–B6 + temp D60; §1.17 = P0
+  cost controls D83, implemented NOT deployed), `UI_ARCHITECTURE.md`,
+  `DECISIONS.md` (see D83), `eval/README.md`.
 - `eval/cases/gold_cases.json` (34 frozen) · `eval/mappings/chunk_map.json`
   (frozen, older corpus) · `chunk_map_3c4.json` (**live mapping — use this**).
 - `eval/run_baseline.py` (frozen harness: `--mapping`, `--sleep`; auth via

@@ -15,6 +15,27 @@ import type {
  * conversation itself when none is given.
  */
 
+/**
+ * L-2: conversation/message existence oracle. PostgREST distinguishes
+ * "row exists but RLS denied" (42501/PGRST301 → authorization) from
+ * "no row" (PGRST116 → not-found). Probing UUIDs would let an authenticated
+ * caller confirm which conversation ids are real. For conversation-scoped
+ * reads both cases collapse to one generic not-found so existence is not
+ * disclosed. Message mutations keep precise kinds (server endpoint + RLS
+ * remain authoritative).
+ */
+function normalizeConversationReadError(
+  error: { code?: string; message?: string } | null,
+  source?: string,
+): ApiError | null {
+  if (!error) return null;
+  const code = error.code ?? "";
+  if (code === "42501" || code === "PGRST301" || code === "PGRST116") {
+    return new ApiError("not-found", { source, cause: error });
+  }
+  return normalizePostgrestError(error, source);
+}
+ 
 /** Workspaces (tenants) the signed-in user belongs to, with display names. */
 export async function listMemberships(userId: string): Promise<MembershipRow[]> {
   const { data, error } = await getSupabaseClient()
@@ -66,7 +87,7 @@ export async function listConversations(
     .order("updated_at", { ascending: false })
     .limit(limit);
 
-  const normalized = normalizePostgrestError(error, "conversations");
+  const normalized = normalizeConversationReadError(error, "conversations");
   if (normalized) throw normalized;
   return (data ?? []) as ConversationRow[];
 }
@@ -80,7 +101,7 @@ export async function listMessages(
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
 
-  const normalized = normalizePostgrestError(error, "messages");
+  const normalized = normalizeConversationReadError(error, "messages");
   if (normalized) throw normalized;
   return (data ?? []) as MessageRow[];
 }
@@ -101,17 +122,41 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 /**
  * Message edit support (linear edit + truncate + regenerate).
  *
- * The schema keeps no history: messages are plain linear rows ordered by
- * `created_at`, and RLS permits member update/delete (`messages_update_members`,
- * `messages_delete_members` — "append-mostly by convention", corrections
- * allowed). These two helpers are the only message mutations the browser
- * performs for editing; `/ask` itself still owns appending new rows.
- *
- * Both scope every write by `tenant_id` in addition to the row id, so a
- * caller can never touch another workspace's rows even if an id were guessed.
+ * H-1: edits go through the server-authorized `edit-message` Edge Function,
+ * which enforces conversation ownership (author or workspace manager) and
+ * applies the content update + tail truncate atomically in one transaction.
+ * Direct PostgREST message mutations are additionally narrowed by RLS
+ * (owner-or-manager) as defense in depth; the browser never relies on them
+ * for editing. `/ask` still owns appending regenerated rows.
  */
 
-/** Replace a user message's content in place (position and timestamps kept). */
+/**
+ * Server-authorized edit: rewrite one user message and truncate the stale
+ * tail atomically. Throws ApiError with kind auth/authorization/not-found/
+ * validation/throttled/backend — safe to render via userMessage.
+ */
+export async function editMessage(
+  tenantId: string,
+  conversationId: string,
+  messageId: string,
+  content: string,
+  deleteIds: string[],
+): Promise<void> {
+  const { callFunction } = await import("@/lib/api/client");
+  await callFunction<{ ok: boolean; edited_id: string }>("edit-message", {
+    tenant_id: tenantId,
+    conversation_id: conversationId,
+    message_id: messageId,
+    content,
+    delete_ids: deleteIds,
+  });
+}
+
+/**
+ * @deprecated Use editMessage (server-authorized). Kept for the finalize
+ * retry path only; RLS now restricts it to owner-or-manager.
+ * Replace a user message's content in place (position and timestamps kept).
+ */
 export async function updateMessageContent(
   tenantId: string,
   messageId: string,
