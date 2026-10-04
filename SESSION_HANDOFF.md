@@ -52,15 +52,19 @@ Deployed (all ACTIVE, verified 2026-10-04):
 
 | Function | Version | Role |
 |---|---|---|
-| `ingest-pdf` | **38** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) + D81 hardening + D83 cost gate |
-| `embed-worker` | **37** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) + D83 kill switch + provider slot + per-batch usage |
-| `query-chunks` | **37** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) + D83 gate/kill/slots |
-| `ask` | **52** | full quality chain, notebook scope (D50) + conversation temp union (D60) + citation excerpts (D80) + D83 gate/kill/slots/usage |
-| `storage-cleanup` | **4** | bounded orphan cleanup (D52) + expired-temp section (D60) — unchanged by D83 |
-| `benchmark-retrieval` | **5** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
-| `benchmark-answer` | **3** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
-| `benchmark-ingest` | **3** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
-| `edit-message` | **1** | NEW: server-authorized edit + truncate (D81) + D83 gate |
+| `ingest-pdf` | **40** | parse/chunk + upload-safety limits (D47) + delete + post-parse worker trigger (D58) + `ingest-temp`/`promote` (D60) + D81 hardening + D83 cost gate |
+| `embed-worker` | **39** | cron embedding, batched (D48), direct-claim path + paced 3 RPM (D58) + D83 kill switch + provider slot + per-batch usage |
+| `query-chunks` | **39** | retrieval, notebook/document scope (D50) + conversation temp scope with unscoped temp-exclusion (D60) + D83 gate/kill/slots |
+| `ask` | **54** | full quality chain, notebook scope (D50) + conversation temp union (D60) + citation excerpts (D80) + D83 gate/kill/slots/usage |
+| `storage-cleanup` | **6** | bounded orphan cleanup (D52) + expired-temp section (D60) — code unchanged by D83; version lifted by platform redeploys on secret rotation |
+| `benchmark-retrieval` | **7** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `benchmark-answer` | **5** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `benchmark-ingest` | **5** | benchmark path + manager-only (D81) + D83 gate/kill/slots |
+| `edit-message` | **3** | NEW: server-authorized edit + truncate (D81) + D83 gate |
+
+(Versions observed post-push 2026-10-04: each `secrets set` triggers a
+platform redeploy of ALL functions, so numbers read +2 over the gate's
+deploy step with identical source; content re-verified behaviorally.)
 
 Migration `20261001000000` (D81 + D83 §1b) APPLIED 2026-10-04. `PROVIDER_KILL_SWITCH=false` (drill-verified).
 D83 live proof: kill 503/zero-records, user-minute 429s, slots busy-503 with
@@ -458,20 +462,17 @@ each pass (D53).
   plus pre-existing `web/src/components/chat/request-status.tsx` (untouched
   by remediation; was dirty before) and the badge refinement in
   `assistant-message.tsx` (still pending from the prior pass).
-- **Untracked (new, remediation):** `supabase/functions/edit-message/`,
-  `supabase/functions/_shared/{rate-limit,rate-limit_test,safe-error,
-  safe-error_test,cors_test,request-size,request-size_test}.ts`,
-  `supabase/migrations/20261001000000_security_remediation.sql`.
-  **Untracked (new, P0 cost controls D83, 2026-10-04, NOT authorized to
-  commit/deploy):** `supabase/functions/_shared/cost-control.ts`,
-  `cost-control_test.ts` (315/315 shared tests green incl. 18 new),
-  migration §1b (usage_daily + provider_slots + claim/release/record RPCs +
-  7-arg gate), wiring in ask/query-chunks/ingest-pdf/edit-message/
-  embed-worker/benchmark-*; `BENCHMARK_REPORT.md`, `BENCHMARK_RESULTS.json`,
-  `BENCHMARK_PER_CASE.json`, `SECURITY_FINDINGS.json` (baseline artifacts,
-  leave alone). Next step is the separate production-readiness/deployment
-  gate (migration apply → deploy → kill drill + 429/busy/manager-only
-  verification + gold re-run).
+- **Committed `ceddea7` (pushed 2026-10-04):** D81/D82/D83 code + migration +
+  docs (34 files). Post-commit drift fix pending (this doc + ARCH §1.15/§1.17
+  version numbers only) — see below.
+- **P0 final state (2026-10-04, post-push `ceddea7`):** migration applied,
+  8 functions deployed + live-verified (kill drill, 429/busy, reap,
+  member-write denials, manager benchmark, gold 34/34), probe + gold
+  conversations deleted (verified zero), kill switch OFF (re-verified by
+  200 probe), no test credentials in repo, benchmark artifacts left
+  unstaged. Open verification gaps (need 2nd credential/tenant or expensive
+  trips — all BLOCKED, none faked): non-manager benchmark deny, cross-tenant
+  proof, tenant-minute/daily + user-daily live trips.
   **Untracked (pre-existing, leave alone):** `brag-output*/`, `deno.lock`,
   `eval/cases/followup_*` golds, `supabase/functions/_shared/evidence-reuse*.ts`
   (H3C-B history, still unwired — verified, no imports added), `super-video-maker-skill/`.

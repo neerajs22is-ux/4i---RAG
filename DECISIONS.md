@@ -1593,8 +1593,12 @@ D83. P0 cost/abuse controls (implemented, NOT deployed)
 - Status: DEPLOYED 2026-10-04 (migration `20261001000000` applied via
   `db query`; 8 functions deployed: ask v52, query-chunks v37, ingest-pdf v38,
   edit-message v1 new, embed-worker v37, benchmark-retrieval v5,
-  benchmark-answer v3, benchmark-ingest v3; storage-cleanup v4 untouched) +
-  LIVE-VERIFIED: kill drill (503, zero records; restore TransportError once,
+  benchmark-answer v3,   benchmark-ingest v3; storage-cleanup v4 untouched) +
+  LIVE-VERIFIED (post-push note: each `secrets set` redeploys ALL functions,
+  so live versions now read ask v54 / qc v39 / ingest v40 / worker v39 /
+  cleanup v6 / bench-ret v7 / bench-ans v5 / bench-ing v5 / edit v3 with
+  identical source; content re-verified behaviorally — busy/429 signals
+  live): kill drill (503, zero records; restore TransportError once,
   succeeded on retry; final `false` verified by secret list + 200 probe),
   user-minute 429s with Retry-After on 12-concurrent burst, slots busy-503
   with 0 stuck after, synthetic stale slot reaped, member writes denied

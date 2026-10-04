@@ -375,12 +375,15 @@ Cron-driven embed-worker resume. Full audit: `eval/runs/diagnostic-3d2.md`.
 
 - Supabase project ref `uqlpfgtkmsaexmtieulp`, region `ap-southeast-2`.
 - AWS Bedrock Mantle region `ap-south-1`; Jina server-side.
-- Deployed and ACTIVE (observed 2026-10-04 via `functions list`):
-  `ingest-pdf` **v38**, `embed-worker` **v37** (+ per-minute Cron),
-  `query-chunks` **v37**, `ask` **v52** (D83 cost controls),
-  `storage-cleanup` **v4** (unchanged, out of D83 scope),
-  `benchmark-retrieval` **v5**, `benchmark-answer` **v3**,
-  `benchmark-ingest` **v3**, `edit-message` **v1** (new).
+- Deployed and ACTIVE (observed 2026-10-04 via `functions list` — note: the
+  platform redeployed all functions twice after secret rotations, so versions
+  read higher than the gate's deploy step with identical source):
+  `ingest-pdf` **v40**, `embed-worker` **v39** (+ per-minute Cron),
+  `query-chunks` **v39**, `ask` **v54** (D83 cost controls),
+  `storage-cleanup` **v6** (unchanged code, platform redeploy only),
+  `benchmark-retrieval` **v7**, `benchmark-answer` **v5**,
+  `benchmark-ingest` **v5**, `edit-message` **v3** (new).
+  Content verified behaviorally post-redeploy (busy/429 cost signals live).
   Migration `20261001000000` (D81 + D83) applied 2026-10-04.
   `PROVIDER_KILL_SWITCH` present, set `false` (verified).
 - `CORRECTNESS_CHECKER_ENABLED` OFF. No other feature flag enabled.
