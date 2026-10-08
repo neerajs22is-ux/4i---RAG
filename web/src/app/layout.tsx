@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Instrument_Sans, JetBrains_Mono } from "next/font/google";
+import { headers } from "next/headers";
 
 import { AppProviders } from "@/components/providers/app-providers";
 import "./globals.css";
@@ -28,6 +29,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  // Canonical origin for resolving social images and absolute URLs. The
+  // deployment can override it with NEXT_PUBLIC_SITE_URL.
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ?? "https://4i-rag.vercel.app",
+  ),
   title: {
     default: "RAG-4i",
     template: "%s · RAG-4i",
@@ -45,9 +51,16 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // The per-request CSP nonce created in `src/proxy.ts`. Reading request
+  // headers here also opts every route into dynamic rendering, which is the
+  // documented requirement for nonce-based CSP. Next.js attaches this nonce
+  // to its own scripts; the value is passed on for the one script the
+  // framework does not own (next-themes' pre-paint colour-scheme script).
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body
@@ -59,7 +72,7 @@ export default function RootLayout({
         >
           Skip to content
         </a>
-        <AppProviders>{children}</AppProviders>
+        <AppProviders nonce={nonce}>{children}</AppProviders>
       </body>
     </html>
   );

@@ -12,26 +12,22 @@ const nextConfig: NextConfig = {
   productionBrowserSourceMaps: false,
   async headers() {
     // Defense-in-depth. Primary XSS barrier remains React escaping +
-    // rehype-sanitize; CSP/frame-ancestors neuter inline/event-handler XSS
-    // and clickjacking if a sanitizer bypass or compromised dep appears.
-    // connect-src must allow the Supabase project host (runtime env) plus
-    // self; everything else is self-only. No credentials-bearing CORS here.
-    const csp = [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
-      "font-src 'self' data:",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-    ].join("; ");
+    // rehype-sanitize; the remaining headers neuter inline/event-handler XSS
+    // where they can and clickjacking if a sanitizer bypass or compromised
+    // dep appears.
+    //
+    // The Content-Security-Policy itself lives in `src/proxy.ts`, not here:
+    // it needs a fresh per-request nonce so Next.js's inline hydration
+    // scripts are allowed to run. A static policy declared here cannot carry
+    // a nonce (and a policy without one blocks all hydration in production).
+    //
+    // `connect-src` in the proxy allows the Supabase project host (runtime
+    // env) plus self; everything else is self-only. No credentials-bearing
+    // CORS here.
     return [
       {
         source: "/:path*",
         headers: [
-          { key: "Content-Security-Policy", value: csp },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "no-referrer" },

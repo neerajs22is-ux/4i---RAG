@@ -12,7 +12,9 @@ import { transition } from "@/lib/motion";
  * App-level providers.
  *
  * - `ThemeProvider` (next-themes) drives the `.dark` class for class-based dark
- *   mode, with system preference as the default.
+ *   mode, with system preference as the default. It receives the per-request
+ *   CSP nonce for its pre-paint colour-scheme script (the framework nonces its
+ *   own scripts automatically; this is the one it does not own).
  * - `SessionProvider` resolves the Supabase session and the active workspace
  *   once for the whole app.
  * - `MotionConfig reducedMotion="user"` makes every Motion primitive honour
@@ -22,13 +24,21 @@ import { transition } from "@/lib/motion";
  *   app keeps a single shared delay and open-state.
  * - A default transition keeps ad-hoc Motion usage on the same rhythm.
  */
-export function AppProviders({ children }: { children: ReactNode }) {
+export function AppProviders({
+  children,
+  nonce,
+}: {
+  children: ReactNode;
+  /** CSP nonce from the request proxy; undefined outside a request. */
+  nonce?: string;
+}) {
   return (
     <ThemeProvider
       attribute="class"
       defaultTheme="system"
       enableSystem
       disableTransitionOnChange
+      nonce={nonce}
     >
       <SessionProvider>
         <MotionConfig
