@@ -75,7 +75,7 @@ export function PreviousChats({ collapsed = false }: { collapsed?: boolean }) {
               className="text-muted-foreground hover:text-foreground"
             >
               <Link
-                href="/"
+                href="/ask"
                 aria-label="New question"
                 onClick={() => setOpen(false)}
               >

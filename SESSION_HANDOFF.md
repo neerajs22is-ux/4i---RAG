@@ -235,14 +235,39 @@ refinement, this pass). Frontend `d27b057` is live on Vercel
 **Upload-failure diagnosis (2026-09-17):** the reported "could not be
 registered" had two causes — (1) the queue registered every file immediately
 while `ingest-pdf` allows one processing job per workspace (reproduced: 409 for
-files 2–4), now fixed as above; (2) a stale dev module graph, because `next
-build` was run twice while `next dev` owned `.next`. **Rule: never run
+files 2–4), now fixed as above; (2) a stale dev module graph, because
+`next build` was run twice while `next dev` owned `.next`. **Rule: never run
 `next build` while the dev server is running** — restart it from a clean
 `.next` instead. Full evidence and validation:
 `eval/runs/ui-build-research-and-implementation.md` §7.
 Four objects the user uploaded before the fix remain in Storage with no
 documents (their files; left untouched — re-upload registers normally, or
 `storage-cleanup` can sweep them after 24 h).
+
+**Public landing page + routing + production CSP fix (uncommitted, this pass):
+** `/` is now a public landing page (`web/src/app/(site)/page.tsx` +
+`web/src/components/site/*`): real-product hero demo (grounding badge, cited
+answer, verbatim evidence rows), the four evidence states, four-step how-it
+works, Spaces scoping, implemented-only security claims, CTA and footer.
+The application home moved from `/` to `/ask`; nav, sidebar brand,
+new-question links and the app error page all point at `/ask`; signed-in
+visitors keep the landing (no redirect — the entry action switches to
+"Open workspace") so the page stays reachable for everyone. Metadata +
+generated OG image + brand `icon.svg` added. **During verification a pre-existing production incident was
+found and fixed with authorization:** the D81 CSP (`script-src 'self'` in
+`next.config.ts`) blocked all of Next.js's inline hydration scripts — the
+deployed app (and local HEAD) could not hydrate; sign-in and the entire chat
+UI were dead in production. The policy now lives in `src/proxy.ts` with a
+per-request nonce (`script-src 'self' 'nonce-…' 'strict-dynamic'`), the root
+layout passes the nonce to `next-themes`, and all other security headers stay
+in `next.config.ts`. Trade-off (accepted): document routes are dynamically
+rendered under nonce CSP instead of static. Live Chrome/CDP verification
+(production build): sign-in renders, real `/ask` answered with grounding +
+8 evidence rows + 10 citation markers (test conversation deleted 204),
+sign-out returns to sign-in, signed-in `/` → `/ask`, theme toggle works,
+0 console errors, 0 horizontal overflow at 390–1440 px; light + dark
+full-page screenshots captured. Nothing committed or deployed; backend
+untouched.
 
 ## 6. Known limitations / pending
 

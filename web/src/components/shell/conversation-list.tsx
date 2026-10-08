@@ -93,7 +93,7 @@ export function ConversationList({
             size="icon-xs"
             className="text-muted-foreground hover:text-foreground"
           >
-            <Link href="/" aria-label="New question" onClick={onNavigate}>
+            <Link href="/ask" aria-label="New question" onClick={onNavigate}>
               <Plus className="size-3" aria-hidden="true" />
             </Link>
           </Button>

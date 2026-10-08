@@ -24,7 +24,7 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   {
-    href: "/",
+    href: "/ask",
     label: "Ask",
     icon: MessageSquareText,
     hint: "Ask a question across every document in this workspace.",
@@ -50,7 +50,6 @@ export const NAV_ITEMS: NavItem[] = [
 ];
 
 export function isNavItemActive(pathname: string, href: string): boolean {
-  if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 

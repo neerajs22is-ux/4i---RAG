@@ -41,7 +41,7 @@ export default function AppError({
               Try again
             </Button>
             <Button variant="ghost" asChild>
-              <Link href="/">Back to Ask</Link>
+              <Link href="/ask">Back to Ask</Link>
             </Button>
           </div>
         </div>

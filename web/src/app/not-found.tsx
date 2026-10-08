@@ -44,7 +44,7 @@ export default function NotFound() {
           </p>
           <Button asChild className="mt-6 gap-2">
             <Link href="/">
-              Back to Ask
+              Back to home
               <ArrowRight className="size-3.5" aria-hidden="true" />
             </Link>
           </Button>

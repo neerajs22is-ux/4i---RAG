@@ -61,7 +61,7 @@ export function SidebarContent({
       >
         <RailTooltip label="RAG-4i" enabled={collapsed}>
           <Link
-            href="/"
+            href="/ask"
             onClick={onNavigate}
             className="focus-visible:ring-ring/50 flex min-w-0 items-center gap-2.5 rounded-md outline-none focus-visible:ring-2"
           >

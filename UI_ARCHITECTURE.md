@@ -3,9 +3,10 @@
 Status: **UI Passes 1–3B, the post-3B fixes, the notebook build (Pass A
 foundation, Pass B notebook experience, Pass C upload, Pass D source selection),
 Pass E (chat polish), the Spaces/sidebar polish pass, the temporary-file pass
-(D60), the citation/evidence refinement, the chat-layout + answer-reveal pass
-and the RAG-4i brand colour system are implemented and verified. The dedicated
-visual review pass is NOT started.**
+(D60), the citation/evidence refinement, the chat-layout + answer-reveal pass,
+the RAG-4i brand colour system and the public landing page (unauthenticated
+entry) are implemented and verified. The dedicated visual review pass is NOT
+started.**
 This file is the source of truth for the **frontend only**.
 
 The design system (§9) is the RAG-4i brand token set: an Onyx / Jet Black /
@@ -106,7 +107,13 @@ web/
 
 ## 3. Routing
 
-- `/` — new conversation. Created only when the first answer is persisted.
+- `/` — **public landing page** (`(site)` route group; server-rendered) for
+  everyone, signed in or not. The entry button adapts per session ("Sign in" /
+  "Open workspace"; `components/site/entry-action.tsx`) instead of redirecting
+  signed-in visitors away, so the page stays reachable and linkable. The page
+  never renders protected state.
+- `/ask` — new conversation (the application home). Created only when the
+  first answer is persisted.
 - `/notebooks` — **Spaces** browse surface (internal route): cards with real
   source counts, create, delete.
 - `/notebooks/[id]` — **Space workspace** (internal route): sources pane + scoped
@@ -122,6 +129,41 @@ web/
 
 All product routes live in the `(app)` group and are gated. The shell renders one
 scroll region per page; navigation never performs a full reload.
+
+### 3.1 Public landing page (new)
+
+The unauthenticated entry experience: `web/src/app/(site)/page.tsx` composed of
+`web/src/components/site/*` — nav, hero (with a faithful, static replica of the
+real answer surface: question, grounding badge, cited answer, verbatim evidence
+rows), the four evidence states, a four-step how-it-works, Spaces scoping,
+security boundaries, closing CTA and footer. The evidence and security sections
+carry their own product figures: a refusal fragment (the backend's exact
+`REFUSAL_TEXT` constant) plus the claim → passage marker pairing, and a
+workspace-isolation diagram drawing the implemented row-level-security
+boundary. Copy is limited to implemented
+behaviour (no logos, testimonials, statistics or certifications are invented;
+refusals are presented as the product behaviour they are). One reveal
+orchestration (`site-reveal`/`answer-reveal-in` in `globals.css`) runs the demo
+card cascade question → answer → evidence at first paint; it works without
+JavaScript, respects reduced motion, and no other section animates. The demo
+content is labelled as an illustration.
+
+Routing: the application's new-conversation route moved from `/` to `/ask`
+(nav config, sidebar brand, new-question links and the app error page all point
+at `/ask`). `/` serves the landing for everyone; signed-in visitors keep the
+landing (no redirect) and the entry action switches to "Open workspace"
+(`components/site/entry-action.tsx`). Metadata (title, description, Open
+Graph), a generated OG image and a brand `icon.svg` live beside the page.
+
+**CSP note (same pass):** the CSP added in the D81 hardening
+(`script-src 'self'` in `next.config.ts`) blocked Next.js's inline hydration
+scripts in production — the sign-in screen and the whole client surface never
+mounted. The policy now lives in `src/proxy.ts` with a per-request nonce
+(`script-src 'self' 'nonce-…' 'strict-dynamic'`), and the root layout passes the
+nonce to `next-themes`. Using a nonce means document routes render per request
+(dynamic rendering) instead of being statically prerendered; that trade-off is
+accepted to keep an enforcing CSP. Other security headers are unchanged in
+`next.config.ts`.
 
 ## 4. Auth and session flow
 
@@ -521,6 +563,8 @@ These follow from the locked backend; violating them would make the UI lie.
 | Temporary-file pass evidence | VERIFIED | `%TEMP%\rag4i-temp-files-shots\` (4 screenshots + `results.json`); report: `eval/runs/ui-temporary-chat-files.md` |
 | **Chat layout + answer reveal** (single scroll context, Copy-only actions, answer card, collapsed-by-default evidence, `AnswerReveal` block cascade) | IMPLEMENTED + VERIFIED (`ce3b946`) | `tsc`/`eslint`/`next build` clean; live local prod build: fresh answers reveal progressively and settle <2 s with identical final DOM, `/`→`/c` remount replays once via the announcement-module handoff (no replay on reload), collapsed default holds, marker/badge navigation + repeats + themes + 390 px + reload all pass, 0 console errors; probe conversations deleted |
 | **RAG-4i brand colour system** (Onyx/Jet Black/Platinum neutrals; Bright Gold primary; Saffron secondary; `primary-strong`/`primary-ink`) | VERIFIED | centralized token rewrite in `globals.css`, no hardcoded component colours; light + dark + 390 px + desktop screenshots (`brand-*.png`); canvas-sampled contrast: heading 15.7:1 / 14.8:1, body+muted 5.2:1 / 6.2:1, primary fill 13.5:1; 0 console errors, 0 overflow; no behaviour/API change |
+| **Public landing page + routing** (`(site)/page.tsx`; app home moved to `/ask`) | **VERIFIED** | `tsc`/`eslint`/`next build` clean; live Chrome/CDP against the production build: 0 console errors; hero, demo card, evidence states, steps, spaces, security, CTA render; signed-out landing and signed-in landing both reachable, entry action switches "Sign in" ↔ "Open workspace"; unauthenticated `/ask` renders the sign-in form; one real `/ask` answer with grounding state, 8 evidence rows and 10 citation markers (test conversation deleted, DELETE 204); sign-out returns to the sign-in screen; 0 horizontal overflow at 390/430/768/1024/1280/1440 px; theme toggle exercised; light + dark full-page screenshots |
+| **CSP nonce fix** (`src/proxy.ts`; policy moved out of `next.config.ts`) | **VERIFIED** | the previous static `script-src 'self'` policy blocked Next.js's inline hydration scripts in production (React error #412; sign-in never mounted); with a per-request nonce: 0 CSP violations in Chrome and every client surface regains function. Document routes are dynamic by design under nonce CSP |
 
 ## 12. Pending and deferred work
 
